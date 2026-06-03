@@ -23,7 +23,12 @@ from core.range_proxy import (
     guess_content_type,
     serve_range_proxy,
 )
-from core.strm_security import build_strm_play_path, verify_strm_signature
+from core.strm_security import (
+    build_strm_play_path,
+    build_strm_v2_base_path,
+    decode_strm_file_key,
+    verify_strm_signature,
+)
 from core.utils import normalize_bool
 
 
@@ -65,6 +70,26 @@ async def _require_strm_access(request: Request, account_id: int, file_id: str) 
 
     signature = (request.query_params.get("sign") or "").strip()
     play_path = build_strm_play_path(account_id, file_id)
+    if not signature or not verify_strm_signature(play_path, signature):
+        return Response(status_code=401, content="Invalid signature")
+    return None
+
+
+async def _require_strm_v2_access(
+    request: Request,
+    account_id: int,
+    file_id: str,
+    token: str,
+    signature: str = "",
+) -> Optional[Response]:
+    expected = await _get_strm_token()
+    if not token or token != expected:
+        return Response(status_code=401, content="Unauthorized")
+
+    if not await _is_strm_signature_enabled():
+        return None
+
+    play_path = build_strm_v2_base_path(account_id, file_id, token)
     if not signature or not verify_strm_signature(play_path, signature):
         return Response(status_code=401, content="Invalid signature")
     return None
@@ -126,6 +151,30 @@ async def play_by_file_id(account_id: int, file_id: str, request: Request):
     unauthorized = await _require_strm_access(request, account_id, str(file_id))
     if unauthorized:
         return unauthorized
+    return await _play_resolved_file(account_id, file_id, request)
+
+
+@router.api_route("/v2/play/{account_id}/{file_key}/t/{token}", methods=["GET", "HEAD"])
+@router.api_route("/v2/play/{account_id}/{file_key}/t/{token}/s/{signature}", methods=["GET", "HEAD"])
+async def play_v2_by_file_key(
+    account_id: int,
+    file_key: str,
+    token: str,
+    request: Request,
+    signature: str = "",
+):
+    try:
+        file_id = decode_strm_file_key(file_key)
+    except Exception:
+        return Response(status_code=404, content="Not found")
+
+    unauthorized = await _require_strm_v2_access(request, account_id, file_id, token, signature)
+    if unauthorized:
+        return unauthorized
+    return await _play_resolved_file(account_id, file_id, request)
+
+
+async def _play_resolved_file(account_id: int, file_id: str, request: Request):
     if not str(file_id or "").strip():
         return Response(status_code=404, content="Not found")
 
@@ -144,18 +193,14 @@ async def play_by_file_id(account_id: int, file_id: str, request: Request):
 
     download_mode = get_effective_download_mode(driver, download)
 
-    # ---- redirect 模式：直接 302（除 ISO 外） ----
     if download_mode == "redirect":
         is_iso = _download_looks_like_iso(download)
         iso_mode = await _get_iso_play_mode()
-        # ISO 在 proxy 模式下走代理（部分播放器不会跟随 302 处理 ISO 内目录）
         if not (is_iso and iso_mode == "proxy"):
             if request.method == "HEAD":
-                # HEAD 时也回 302，让客户端自己决定怎么处理
                 return Response(status_code=302, headers={"Location": download.download_url})
             return RedirectResponse(url=download.download_url, status_code=302)
 
-        # 走 proxy 分支处理 ISO
         file_info, download_url, _size = build_proxy_file_info_from_download(file_id, download)
         return await _serve_via_proxy(
             driver=driver,
@@ -166,8 +211,6 @@ async def play_by_file_id(account_id: int, file_id: str, request: Request):
             download_url=download_url,
         )
 
-    # ---- proxy 模式：走分片 Range 代理 ----
-    # 「本地代理」账号此前一直走下方代理，未应用 strm_iso_play_mode；此处 follow 即 302 至网盘直链。
     is_iso_proxy_branch = _download_looks_like_iso(download)
     iso_mode = await _get_iso_play_mode()
     if is_iso_proxy_branch and iso_mode == "follow":

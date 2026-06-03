@@ -14,7 +14,12 @@ from config import config_manager, Settings
 from core.log_manager import get_writer, LogModule
 from core.driver_base import _extra_api_delay
 from core.driver_service import build_upstream_download_headers, get_account_driver, resolve_download
-from core.strm_security import build_strm_play_path, sign_strm_path
+from core.strm_security import (
+    build_strm_play_path,
+    build_strm_v2_play_path,
+    decode_strm_file_key,
+    sign_strm_path,
+)
 from database.db import db
 
 
@@ -23,6 +28,7 @@ DEFAULT_MEDIA_EXTENSIONS = "mp4;mkv;avi;mov;wmv;flv;ts;m2ts;mpg;mpeg;webm;m4v;is
 
 # Linux ext4 等：单路径分量名上限一般为 255 字节（UTF-8）
 _STRM_MAX_COMPONENT_BYTES = 255
+STRM_LINK_FORMATS = {"v1", "v2"}
 
 
 @dataclass
@@ -337,6 +343,10 @@ class StrmSyncManager:
             return configured
         return f"http://127.0.0.1:{int(Settings.WEB_PORT)}"
 
+    async def _get_strm_link_format(self) -> str:
+        value = str(await config_manager.get_async("strm_link_format") or "v1").strip().lower()
+        return value if value in STRM_LINK_FORMATS else "v1"
+
     async def _get_strm_token(self) -> str:
         value = await config_manager.get_async("strm_token")
         token = str(value or "").strip()
@@ -624,7 +634,18 @@ class StrmSyncManager:
         local_rel = PurePosixPath(task_folder) / relative_dir / f"{safe_name}.strm"
         return str(local_rel)
 
-    def _build_play_url(self, base_url: str, account_id: int, file_id: str, token: str, signature_enabled: bool) -> str:
+    def _build_play_url(
+        self,
+        base_url: str,
+        account_id: int,
+        file_id: str,
+        token: str,
+        signature_enabled: bool,
+        link_format: str = "v1",
+    ) -> str:
+        if link_format == "v2":
+            return f"{base_url}{build_strm_v2_play_path(account_id, file_id, token, signature_enabled)}"
+
         play_path = build_strm_play_path(account_id, file_id)
         params = [("token", token)]
         if signature_enabled:
@@ -695,6 +716,7 @@ class StrmSyncManager:
 
         base_url = await self._get_strm_base_url()
         token = await self._get_strm_token()
+        link_format = await self._get_strm_link_format()
         signature_enabled = await self._get_bool_setting("strm_signature_enabled", False)
         default_extensions = await self._get_str_setting("strm_default_extensions", DEFAULT_MEDIA_EXTENSIONS)
         extensions = self._parse_extensions(str(task.get("extensions") or "") or default_extensions)
@@ -781,7 +803,7 @@ class StrmSyncManager:
                             if self._logger:
                                 self._logger.warning(f"STRM旧格式迁移失败: {legacy_abs_path.name} - {err}")
 
-            url = self._build_play_url(base_url, int(account_id), file_id, token, signature_enabled)
+            url = self._build_play_url(base_url, int(account_id), file_id, token, signature_enabled, link_format)
             if local_exists:
                 if scan_mode == "incremental_missing":
                     skipped_existing += 1
@@ -1446,6 +1468,7 @@ class StrmSyncManager:
             task.concurrency = concurrency
             self._task_concurrency_limit = task_concurrency_limit
             base_url = await self._get_strm_base_url()
+            link_format = await self._get_strm_link_format()
             if not base_url:
                 duration_ms = max(int((datetime.now() - started_at).total_seconds() * 1000), 0)
                 await db.update_strm_sync_task(
@@ -1728,7 +1751,7 @@ class StrmSyncManager:
                 if task.scan_mode == "incremental_missing":
                     if local_exists and not migrated_legacy:
                         return
-                url = self._build_play_url(base_url, task.account_id, file_id, token, signature_enabled)
+                url = self._build_play_url(base_url, task.account_id, file_id, token, signature_enabled, link_format)
                 if local_exists:
                     try:
                         if local_abs_path.read_text(encoding="utf-8").strip() == url:
@@ -1911,6 +1934,90 @@ class StrmSyncManager:
             if task:
                 self._running_account_ids.discard(task.account_id)
 
+    def _parse_strm_play_url(self, value: str) -> Optional[Dict[str, Any]]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parts = urllib.parse.urlsplit(text)
+        except Exception:
+            return None
+        path = parts.path or ""
+
+        v2_match = re.match(r"^/api/strm/v2/play/(\d+)/([^/]+)/t/([^/]+)(?:/s/([^/]+))?/?$", path)
+        if v2_match:
+            try:
+                file_id = decode_strm_file_key(v2_match.group(2))
+            except Exception:
+                return None
+            return {
+                "format": "v2",
+                "parts": parts,
+                "account_id": int(v2_match.group(1)),
+                "file_id": file_id,
+                "token": urllib.parse.unquote(v2_match.group(3) or ""),
+                "signature": v2_match.group(4) or "",
+            }
+
+        v1_match = re.match(r"^/api/strm/play/(\d+)/(.*)$", path)
+        if v1_match:
+            pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+            token = ""
+            signature = ""
+            for key, item_value in pairs:
+                if key == "token":
+                    token = item_value
+                elif key == "sign":
+                    signature = item_value
+            return {
+                "format": "v1",
+                "parts": parts,
+                "account_id": int(v1_match.group(1)),
+                "file_id": urllib.parse.unquote(v1_match.group(2) or ""),
+                "token": token,
+                "signature": signature,
+                "query_pairs": pairs,
+            }
+        return None
+
+    def _replace_url_path(self, parts: urllib.parse.SplitResult, new_path: str, query: str = "") -> str:
+        return urllib.parse.urlunsplit((
+            parts.scheme,
+            parts.netloc,
+            new_path,
+            query,
+            parts.fragment,
+        ))
+
+    def _replace_v2_token_in_url(self, parsed: Dict[str, Any], new_token: str) -> str:
+        parts = parsed["parts"]
+        signature_enabled = bool(parsed.get("signature"))
+        new_path = build_strm_v2_play_path(
+            int(parsed["account_id"]),
+            str(parsed["file_id"]),
+            new_token,
+            signature_enabled,
+        )
+        return self._replace_url_path(parts, new_path, parts.query)
+
+    def _build_full_play_url(
+        self,
+        base_url: str,
+        account_id: int,
+        file_id: str,
+        token: str,
+        signature_enabled: bool,
+        link_format: str,
+    ) -> str:
+        return self._build_play_url(
+            base_url.rstrip("/"),
+            account_id,
+            file_id,
+            token,
+            signature_enabled,
+            link_format,
+        )
+
     async def replace_strm_domain(self, new_base_url: str) -> Dict[str, int]:
         base = (new_base_url or "").strip().rstrip("/")
         if not base:
@@ -1961,29 +2068,86 @@ class StrmSyncManager:
                 if not first:
                     continue
 
-                parts = urllib.parse.urlsplit(first)
-                pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-                if not pairs:
+                parsed = self._parse_strm_play_url(first)
+                if not parsed:
                     continue
 
                 changed = False
-                next_pairs = []
-                for key, value in pairs:
-                    if key == "token" and old_value and value == old_value:
+                if parsed["format"] == "v2":
+                    if old_value and parsed.get("token") == old_value:
                         matched += 1
-                        if value != new_value:
-                            value = new_value
-                            changed = True
-                    next_pairs.append((key, value))
+                        replaced = self._replace_v2_token_in_url(parsed, new_value)
+                        changed = replaced != first
+                else:
+                    parts = parsed["parts"]
+                    pairs = parsed.get("query_pairs") or []
+                    next_pairs = []
+                    for key, value in pairs:
+                        if key == "token" and old_value and value == old_value:
+                            matched += 1
+                            if value != new_value:
+                                value = new_value
+                                changed = True
+                        next_pairs.append((key, value))
+
+                    if changed:
+                        replaced = urllib.parse.urlunsplit((
+                            parts.scheme,
+                            parts.netloc,
+                            parts.path,
+                            urllib.parse.urlencode(next_pairs),
+                            parts.fragment,
+                        ))
 
                 if changed:
-                    replaced = urllib.parse.urlunsplit((
-                        parts.scheme,
-                        parts.netloc,
-                        parts.path,
-                        urllib.parse.urlencode(next_pairs),
-                        parts.fragment,
-                    ))
+                    lines[0] = replaced
+                    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    updated += 1
+            except Exception:
+                continue
+
+        return {"total": total, "matched": matched, "updated": updated}
+
+    async def replace_strm_link_format(self, link_format: str) -> Dict[str, int]:
+        target_format = str(link_format or "v1").strip().lower()
+        if target_format not in STRM_LINK_FORMATS:
+            raise ValueError("unsupported strm link format")
+        default_base_url = await self._get_strm_base_url()
+        default_token = await self._get_strm_token()
+        self._strm_root.mkdir(parents=True, exist_ok=True)
+
+        total = 0
+        matched = 0
+        updated = 0
+        for file_path in self._strm_root.rglob("*.strm"):
+            total += 1
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+                lines = content.splitlines()
+                if not lines:
+                    continue
+                first = lines[0].strip()
+                parsed = self._parse_strm_play_url(first)
+                if not parsed:
+                    continue
+                matched += 1
+                parts = parsed["parts"]
+                base_url = (
+                    f"{parts.scheme}://{parts.netloc}".rstrip("/")
+                    if parts.scheme and parts.netloc
+                    else default_base_url
+                )
+                token = str(parsed.get("token") or "").strip() or default_token
+                signature_enabled = bool(str(parsed.get("signature") or "").strip())
+                replaced = self._build_full_play_url(
+                    base_url,
+                    int(parsed["account_id"]),
+                    str(parsed["file_id"]),
+                    token,
+                    signature_enabled,
+                    target_format,
+                )
+                if replaced != first:
                     lines[0] = replaced
                     file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
                     updated += 1

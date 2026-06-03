@@ -21,6 +21,7 @@ DEFAULT_MEDIA_EXTENSIONS = "mp4;mkv;avi;mov;wmv;flv;ts;m2ts;mpg;mpeg;webm;m4v;is
 STRM_CONFLICT_POLICIES = {"size_desc", "size_asc", "name_asc"}
 STRM_LEGACY_CONFLICT_POLICIES = {"quality_then_size"}
 STRM_ISO_PLAY_MODES = {"proxy", "follow"}
+STRM_LINK_FORMATS = {"v1", "v2"}
 STRM_TASK_NAME_WIDTH_LIMIT = 20
 
 
@@ -130,10 +131,14 @@ async def _get_strm_settings_data(request: Request) -> Dict[str, Any]:
         await config_manager.set_async("strm_conflict_policy", conflict_policy)
     elif conflict_policy not in STRM_CONFLICT_POLICIES:
         conflict_policy = "size_desc"
+    link_format = await _get_strm_text_setting("strm_link_format", "v1")
+    if link_format not in STRM_LINK_FORMATS:
+        link_format = "v1"
 
     return {
         "strm_base_url": base_url,
         "strm_token": token,
+        "strm_link_format": link_format,
         "strm_default_scan_interval": defaults["scan_interval"],
         "strm_task_concurrency": defaults["task_concurrency"],
         "strm_signature_enabled": signature_enabled,
@@ -154,6 +159,8 @@ class StrmSettingsUpdate(BaseModel):
     strm_base_url: Optional[str] = None
     regenerate_token: Optional[bool] = None
     apply_token_to_existing_strm: Optional[bool] = None
+    strm_link_format: Optional[str] = None
+    apply_link_format_to_existing_strm: Optional[bool] = None
     strm_default_scan_interval: Optional[int] = None
     strm_task_concurrency: Optional[int] = None
     strm_signature_enabled: Optional[bool] = None
@@ -178,6 +185,7 @@ async def get_strm_settings(request: Request, session_data: dict = Depends(requi
 async def update_strm_settings(payload: StrmSettingsUpdate, request: Request, session_data: dict = Depends(require_admin_auth)):
     try:
         token_replace_result = None
+        link_format_replace_result = None
 
         if payload.strm_base_url is not None:
             value = (payload.strm_base_url or "").strip()
@@ -246,9 +254,19 @@ async def update_strm_settings(payload: StrmSettingsUpdate, request: Request, se
                 return _error_response(message="ISO播放规则不支持")
             await config_manager.set_async("strm_iso_play_mode", value)
 
+        if payload.strm_link_format is not None:
+            value = str(payload.strm_link_format or "v1").strip().lower()
+            if value not in STRM_LINK_FORMATS:
+                return _error_response(message="STRM链接格式不支持")
+            await config_manager.set_async("strm_link_format", value)
+            if normalize_bool(payload.apply_link_format_to_existing_strm, False):
+                link_format_replace_result = await strm_sync_manager.replace_strm_link_format(value)
+
         data = await _get_strm_settings_data(request)
         if token_replace_result is not None:
             data["strm_token_replace_result"] = token_replace_result
+        if link_format_replace_result is not None:
+            data["strm_link_format_replace_result"] = link_format_replace_result
         return _success_response(data=data, message="更新STRM设置成功")
     except Exception as e:
         return _error_response(message=f"更新STRM设置失败: {str(e)}")

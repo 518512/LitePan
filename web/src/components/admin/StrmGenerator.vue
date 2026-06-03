@@ -296,6 +296,24 @@
         </div>
         <div class="group-item">
           <div class="group-label with-help">
+            STRM链接格式
+            <span class="help-icon" @mouseover="strmLinkFormatTooltipVisible = true" @mouseleave="strmLinkFormatTooltipVisible = false">
+              <i class="fas fa-question-circle"></i>
+              <div class="tooltip" v-show="strmLinkFormatTooltipVisible">
+                <div class="tooltip-content">
+                  <div class="tooltip-title">链接格式说明</div>
+                  <div class="tooltip-body">
+                    <p>v1 为传统格式。</p>
+                    <p>v2 兼容性更高，适合外网播放异常时尝试。</p>
+                  </div>
+                </div>
+              </div>
+            </span>
+          </div>
+          <CustomSelect v-model="strmSettings.strm_link_format" :options="strmLinkFormatOptions" class="settings-select" placeholder="请选择" />
+        </div>
+        <div class="group-item">
+          <div class="group-label with-help">
             生成链接携带签名
             <span class="help-icon" @mouseover="strmSignatureTooltipVisible = true" @mouseleave="strmSignatureTooltipVisible = false">
               <i class="fas fa-question-circle"></i>
@@ -1503,6 +1521,7 @@ const strmBaseUrlTooltipVisible = ref(false)
 const strmIntervalTooltipVisible = ref(false)
 const strmTaskConcurrencyTooltipVisible = ref(false)
 const strmSignatureTooltipVisible = ref(false)
+const strmLinkFormatTooltipVisible = ref(false)
 const strmMinSizeTooltipVisible = ref(false)
 const strmDefaultExtensionsTooltipVisible = ref(false)
 const strmMetadataExtTooltipVisible = ref(false)
@@ -1750,6 +1769,7 @@ const adminStore = useAdminStore()
 const { accounts } = storeToRefs(adminStore)
 
 const replaceDomain = ref('')
+const originalStrmLinkFormat = ref('v1')
 
 const defaultExtensions = 'mp4;mkv;avi;mov;wmv;flv;ts;m2ts;mpg;mpeg;webm;m4v;iso;rmvb;mp3;flac;aac;wav;m4a'
 const settingsTabs = ['settings', 'organizeSettings']
@@ -1767,7 +1787,8 @@ const strmSettings = reactive({
   strm_metadata_max_size_mb: 10,
   strm_metadata_parent_enabled: true,
   strm_conflict_policy: 'size_desc',
-  strm_iso_play_mode: 'follow'
+  strm_iso_play_mode: 'follow',
+  strm_link_format: 'v1'
 })
 
 const form = reactive({
@@ -1854,6 +1875,16 @@ const strmIsoPlayModeOptions = [
   { value: 'follow', label: '跟随网盘模式' },
   { value: 'proxy', label: '强制代理模式' }
 ]
+
+const strmLinkFormatOptions = [
+  { value: 'v1', label: 'v1 传统格式' },
+  { value: 'v2', label: 'v2 高兼容格式' }
+]
+
+const normalizeStrmLinkFormat = (value) => {
+  const normalized = String(value || 'v1').trim().toLowerCase()
+  return ['v1', 'v2'].includes(normalized) ? normalized : 'v1'
+}
 
 const tmdbLanguageOptions = [
   { value: 'zh-CN', label: '简体中文' },
@@ -2099,6 +2130,8 @@ const loadStrmSettings = async () => {
     strmSettings.strm_metadata_parent_enabled = response.data.data.strm_metadata_parent_enabled !== false
     strmSettings.strm_conflict_policy = normalizeConflictPolicy(response.data.data.strm_conflict_policy)
     strmSettings.strm_iso_play_mode = response.data.data.strm_iso_play_mode || 'follow'
+    strmSettings.strm_link_format = normalizeStrmLinkFormat(response.data.data.strm_link_format)
+    originalStrmLinkFormat.value = strmSettings.strm_link_format
     if (!replaceDomain.value) {
       replaceDomain.value = strmSettings.strm_base_url || ''
     }
@@ -2106,6 +2139,30 @@ const loadStrmSettings = async () => {
 }
 
 const saveStrmSettings = async () => {
+  const nextLinkFormat = normalizeStrmLinkFormat(strmSettings.strm_link_format)
+  let applyLinkFormatToExistingStrm = false
+
+  if (nextLinkFormat !== originalStrmLinkFormat.value) {
+    try {
+      const result = await confirm({
+        title: '确认切换STRM格式',
+        content: nextLinkFormat === 'v2'
+          ? '是否同时将已有 .strm 一键替换为 v2 格式？'
+          : '是否同时将已有 .strm 一键替换为 v1 格式？',
+        confirmText: '保存设置',
+        icon: 'question',
+        checkboxLabel: '同时一键替换已有strm为新格式',
+        checkboxChecked: true
+      })
+      applyLinkFormatToExistingStrm = result?.checked !== false
+    } catch (error) {
+      if (error.message !== 'Modal closed') {
+        window.appNotification.error('保存失败: ' + error.message)
+      }
+      return
+    }
+  }
+
   const response = await axios.post('/api/admin/strm/settings', {
     strm_base_url: strmSettings.strm_base_url,
     strm_default_scan_interval: strmSettings.strm_default_scan_interval,
@@ -2117,7 +2174,9 @@ const saveStrmSettings = async () => {
     strm_metadata_max_size_mb: strmSettings.strm_metadata_max_size_mb,
     strm_metadata_parent_enabled: strmSettings.strm_metadata_parent_enabled,
     strm_conflict_policy: strmSettings.strm_conflict_policy,
-    strm_iso_play_mode: strmSettings.strm_iso_play_mode
+    strm_iso_play_mode: strmSettings.strm_iso_play_mode,
+    strm_link_format: nextLinkFormat,
+    apply_link_format_to_existing_strm: applyLinkFormatToExistingStrm
   })
   if (response.data.success) {
     strmSettings.strm_base_url = response.data.data.strm_base_url || ''
@@ -2132,10 +2191,17 @@ const saveStrmSettings = async () => {
     strmSettings.strm_metadata_parent_enabled = response.data.data.strm_metadata_parent_enabled !== false
     strmSettings.strm_conflict_policy = normalizeConflictPolicy(response.data.data.strm_conflict_policy)
     strmSettings.strm_iso_play_mode = response.data.data.strm_iso_play_mode || 'follow'
+    strmSettings.strm_link_format = normalizeStrmLinkFormat(response.data.data.strm_link_format)
+    originalStrmLinkFormat.value = strmSettings.strm_link_format
     if (replaceDomain.value) {
       replaceDomain.value = strmSettings.strm_base_url || replaceDomain.value
     }
-    window.appNotification.success('STRM设置保存成功')
+    const linkFormatReplaceResult = response.data.data.strm_link_format_replace_result
+    if (linkFormatReplaceResult) {
+      window.appNotification.success(`STRM设置保存成功，链接格式已替换 ${linkFormatReplaceResult.updated}/${linkFormatReplaceResult.matched} 个文件`)
+    } else {
+      window.appNotification.success('STRM设置保存成功')
+    }
   } else {
     window.appNotification.error(response.data.message || '保存失败')
   }
@@ -2159,6 +2225,8 @@ const regenerateStrmToken = async (applyTokenToExistingStrm = false) => {
     strmSettings.strm_metadata_parent_enabled = response.data.data.strm_metadata_parent_enabled !== false
     strmSettings.strm_conflict_policy = normalizeConflictPolicy(response.data.data.strm_conflict_policy)
     strmSettings.strm_iso_play_mode = response.data.data.strm_iso_play_mode || 'follow'
+    strmSettings.strm_link_format = normalizeStrmLinkFormat(response.data.data.strm_link_format)
+    originalStrmLinkFormat.value = strmSettings.strm_link_format
     const replaceResult = response.data.data.strm_token_replace_result
     if (replaceResult) {
       window.appNotification.success(`STRM令牌已重新生成，已替换 ${replaceResult.updated}/${replaceResult.total} 个文件`)

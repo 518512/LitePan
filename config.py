@@ -36,6 +36,7 @@ class Settings:
     ADMIN_HOME_RETURN_MODE: str = "top_icon"
     STRM_BASE_URL: str = ""
     STRM_TOKEN: str = ""  # 首次落库时自动生成
+    STRM_LINK_FORMAT: str = "v1"
     STRM_DEFAULT_SCAN_INTERVAL: int = 120
     STRM_TASK_CONCURRENCY: int = 3
     UPLOAD_TASK_CONCURRENCY: int = 3
@@ -157,6 +158,12 @@ class Settings:
                 "category": "system",
                 "sensitive": True,
                 "default": cls.STRM_TOKEN
+            },
+            "strm_link_format": {
+                "type": "string",
+                "description": "STRM链接格式",
+                "category": "system",
+                "default": cls.STRM_LINK_FORMAT
             },
             "strm_default_scan_interval": {
                 "type": "integer",
