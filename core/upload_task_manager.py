@@ -29,6 +29,7 @@ class UploadTask:
     status: str = "pending"
     progress: int = 0
     uploaded_bytes: int = 0
+    speed_bytes_per_second: float = 0.0
     message: str = "等待上传"
     error: str = ""
     result: Optional[Dict[str, Any]] = None
@@ -41,6 +42,8 @@ class UploadTask:
     _last_progress_emit_at: float = field(default=0.0, repr=False)
     _last_progress_emit_value: int = field(default=0, repr=False)
     _last_progress_emit_message: str = field(default="", repr=False)
+    _last_speed_sample_at: float = field(default=0.0, repr=False)
+    _last_speed_sample_bytes: int = field(default=0, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -55,6 +58,7 @@ class UploadTask:
             "status": self.status,
             "progress": self.progress,
             "uploaded_bytes": self.uploaded_bytes,
+            "speed_bytes_per_second": self.speed_bytes_per_second,
             "total_bytes": self.total_bytes,
             "message": self.message,
             "error": self.error,
@@ -152,6 +156,7 @@ class UploadTaskManager:
             self._apply_task_state(
                 task,
                 status="paused",
+                speed_bytes_per_second=0.0,
                 message="上传已暂停",
                 error="",
             )
@@ -188,6 +193,7 @@ class UploadTaskManager:
                 task.progress = 0
                 task.uploaded_bytes = 0
                 task.message = "等待上传"
+            task.speed_bytes_per_second = 0.0
             task.error = ""
             task.result = None
             task._cancel_mode = None
@@ -363,12 +369,16 @@ class UploadTaskManager:
                 initial_progress = resumed_progress_state["progress"] if task.resume_data else 0
                 initial_uploaded_bytes = resumed_progress_state["uploaded_bytes"] if task.resume_data else 0
                 initial_message = "正在继续上传" if task.resume_data else "正在上传到网盘"
+                speed_sample_started_at = time.time()
+                task._last_speed_sample_at = speed_sample_started_at
+                task._last_speed_sample_bytes = initial_uploaded_bytes
 
                 await self._update_task(
                     task_id,
                     status="running",
                     progress=initial_progress,
                     uploaded_bytes=initial_uploaded_bytes,
+                    speed_bytes_per_second=0.0,
                     message=initial_message,
                     error="",
                 )
@@ -385,6 +395,14 @@ class UploadTaskManager:
                     total = max(total_bytes or task.total_bytes, 1)
                     progress = min(99, int(uploaded_bytes * 100 / total)) if uploaded_bytes < total else 100
                     now = time.time()
+                    speed_bytes_per_second = task.speed_bytes_per_second
+                    if task._last_speed_sample_at > 0 and uploaded_bytes >= task._last_speed_sample_bytes:
+                        elapsed_seconds = now - task._last_speed_sample_at
+                        delta_bytes = uploaded_bytes - task._last_speed_sample_bytes
+                        if elapsed_seconds > 0:
+                            speed_bytes_per_second = delta_bytes / elapsed_seconds
+                    elif uploaded_bytes <= 0:
+                        speed_bytes_per_second = 0.0
                     normalized_message = message or "正在上传到网盘"
                     is_first = task._last_progress_emit_at <= 0
                     is_complete = uploaded_bytes >= total
@@ -407,11 +425,14 @@ class UploadTaskManager:
                     task._last_progress_emit_at = now
                     task._last_progress_emit_value = progress
                     task._last_progress_emit_message = normalized_message
+                    task._last_speed_sample_at = now
+                    task._last_speed_sample_bytes = uploaded_bytes
                     await self._update_task(
                         task_id,
                         status="running",
                         progress=progress,
                         uploaded_bytes=uploaded_bytes,
+                        speed_bytes_per_second=speed_bytes_per_second,
                         total_bytes=total_bytes or task.total_bytes,
                         message=normalized_message,
                     )
@@ -446,6 +467,7 @@ class UploadTaskManager:
                         status="success",
                         progress=100,
                         uploaded_bytes=task.total_bytes,
+                        speed_bytes_per_second=0.0,
                         message=result.message or "上传成功",
                         result=deepcopy(result.data) if result.data else None,
                         error="",
@@ -455,6 +477,7 @@ class UploadTaskManager:
                     await self._update_task(
                         task_id,
                         status="failed",
+                        speed_bytes_per_second=0.0,
                         message="上传失败",
                         error=self._translate_error_message(result.message),
                     )
@@ -465,6 +488,7 @@ class UploadTaskManager:
                 await self._update_task(
                     task_id,
                     status="paused",
+                    speed_bytes_per_second=0.0,
                     message="上传已暂停",
                     error="",
                 )
@@ -472,6 +496,7 @@ class UploadTaskManager:
                 await self._update_task(
                     task_id,
                     status="canceled",
+                    speed_bytes_per_second=0.0,
                     message="上传任务已取消",
                     error="上传任务已取消",
                 )
@@ -480,6 +505,7 @@ class UploadTaskManager:
             await self._update_task(
                 task_id,
                 status="failed",
+                speed_bytes_per_second=0.0,
                 message="上传失败",
                 error=self._translate_error_message(str(e)),
             )

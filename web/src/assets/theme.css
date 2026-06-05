@@ -867,6 +867,28 @@
     color: var(--text-main) !important;
 }
 
+:root[data-theme="dark"] .modal-folder-selector .breadcrumb-dropdown,
+:root[data-theme="dark"] .modern-modal .folder-selector-shell .breadcrumb-dropdown {
+    background: rgba(24, 29, 37, 0.98) !important;
+    border-color: rgba(148, 163, 184, 0.2) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important;
+}
+
+:root[data-theme="dark"] .modal-folder-selector .breadcrumb-dropdown-item,
+:root[data-theme="dark"] .modern-modal .folder-selector-shell .breadcrumb-dropdown-item {
+    color: #d7deea !important;
+    margin: 2px 4px !important;
+    border-radius: 6px !important;
+    transition: all 0.15s ease !important;
+}
+
+:root[data-theme="dark"] .modal-folder-selector .breadcrumb-dropdown-item:hover,
+:root[data-theme="dark"] .modern-modal .folder-selector-shell .breadcrumb-dropdown-item:hover {
+    background: rgba(59, 130, 246, 0.16) !important;
+    color: #f8fbff !important;
+}
+
 :root[data-theme="dark"] .folder-table-header {
     background: rgba(31, 35, 43, 0.88) !important;
     border: none !important;

@@ -16,7 +16,7 @@
           
           <!-- 垂直切换驱动轮播容器 -->
           <div v-if="driverViewMode === 'carousel'" class="driver-carousel-vertical">
-            <div class="driver-carousel-track-vertical" :style="{ transform: `translateY(-${currentDriverIndex * 180}px)` }">
+            <div class="driver-carousel-track-vertical" :style="{ transform: `translateY(-${currentDriverIndex * 232}px)` }">
               <div 
                 v-for="(driver, index) in filteredDrivers" 
                 :key="driver.key"
@@ -82,7 +82,7 @@
                 :logo="driver.card_logo"
                 :color="driver.card_color || '#4C74DF'"
                 :name="driver.card_name || driver.name"
-                size="large"
+                size="badge"
               />
               <div class="driver-mini-name">{{ driver.display_name }}</div>
             </button>
@@ -256,7 +256,7 @@
                 type="button" 
                 class="btn btn-oauth" 
                 @click="handleOAuthAuth"
-                :disabled="oauthLoading"
+                :disabled="oauthLoading || loading"
               >
                 <i v-if="oauthLoading" class="fas fa-spinner fa-spin"></i>
                 <i v-else class="fas fa-key"></i>
@@ -267,7 +267,7 @@
                 type="button" 
                 class="btn btn-oauth" 
                 @click="handleQrLogin"
-                :disabled="qrLoading"
+                :disabled="qrLoading || loading"
               >
                 <i v-if="qrLoading" class="fas fa-spinner fa-spin"></i>
                 <i v-else class="fas fa-qrcode"></i>
@@ -277,7 +277,7 @@
             
             <!-- 右侧按钮 -->
             <div class="step-actions-right">
-              <button v-if="!isEditMode" type="button" class="btn btn-secondary" @click="prevStep">
+              <button v-if="!isEditMode" type="button" class="btn btn-secondary" @click="prevStep" :disabled="loading">
                 <i class="fas fa-arrow-left"></i> 上一步
               </button>
               <button 
@@ -287,7 +287,7 @@
                 :disabled="loading"
               >
                 <i v-if="loading" class="fas fa-spinner fa-spin"></i>
-                {{ isEditMode ? '保存修改' : '添加账号' }}
+                {{ loading ? '测试中...' : (isEditMode ? '保存修改' : '添加账号') }}
               </button>
             </div>
           </div>
@@ -1293,6 +1293,7 @@ const submitForm = async () => {
   if (!validateStep2()) return
   
   loading.value = true
+  window.appNotification?.info?.('正在测试账号连通性...')
   
   try {
     // 处理配置数据，将空字符串转换为null
@@ -1565,9 +1566,9 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 
-/* 垂直轮播容器距下20px */
+/* 垂直轮播容器距下10px */
 .step-content .driver-carousel-vertical {
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 /* 移除旧的导航控件样式，现在使用内嵌箭头 */
@@ -1587,6 +1588,8 @@ onMounted(() => {
 .step-actions-with-search {
   justify-content: space-between;
   align-items: center;
+  padding-top: 10px;
+  padding-bottom: 16px;
 }
 
 /* 第一步的下一步按钮右对齐 */
@@ -1719,7 +1722,7 @@ onMounted(() => {
 .driver-carousel-vertical {
   position: relative;
   width: 100%;
-  height: 180px;
+  height: 232px;
   overflow: hidden;
   border-radius: 12px;
   margin-bottom: 0;
@@ -1732,23 +1735,23 @@ onMounted(() => {
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: 66px;
+  grid-auto-rows: 52px;
   align-content: start;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 8px;
+  margin-bottom: 10px;
   padding-right: 2px;
 }
 
 .driver-mini-card {
-  height: 66px;
-  min-height: 66px;
+  height: 52px;
+  min-height: 52px;
   border: 1px solid #e4eaf0;
-  border-radius: 11px;
+  border-radius: 10px;
   background: #fbfcfe;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
+  gap: 8px;
+  padding: 8px 10px;
   cursor: pointer;
   transition: all 0.25s ease;
   text-align: left;
@@ -1789,7 +1792,7 @@ onMounted(() => {
 .driver-mini-name {
   min-width: 0;
   color: #2c3e50;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.25;
   overflow: hidden;
@@ -1820,7 +1823,7 @@ onMounted(() => {
 }
 
 .driver-carousel-item-vertical {
-  height: 180px; /* 固定高度与容器一致 */
+  height: 232px; /* 与紧凑网格视图保持一致，切换视图时窗口不跳动 */
   width: 100%;
   display: flex;
   align-items: center;
@@ -1838,7 +1841,7 @@ onMounted(() => {
   transition: all 0.3s ease;
   display: flex;
   align-items: center;
-  padding: 24px;
+  padding: 28px 42px;
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
@@ -1860,7 +1863,16 @@ onMounted(() => {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 34px;
+  min-width: 0;
+}
+
+.driver-card-vertical :deep(.driver-icon-img.size-xlarge),
+.driver-card-vertical :deep(.driver-icon-fallback.size-xlarge) {
+  width: 96px;
+  height: 96px;
+  border-radius: 18px;
+  font-size: 22px;
 }
 
 .driver-icon-large {
@@ -1880,20 +1892,23 @@ onMounted(() => {
 
 .driver-info {
   flex: 1;
+  min-width: 0;
 }
 
 .driver-info h3 {
-  margin: 0 0 4px 0;
-  font-size: 20px;
+  margin: 0 0 10px 0;
+  font-size: 27px;
   font-weight: 600;
   color: #2c3e50;
+  line-height: 1.15;
 }
 
 .driver-info p {
   margin: 0;
   color: #6c757d;
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 560px;
 }
 
 /* 右侧控制区域 */
@@ -1901,8 +1916,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding-left: 20px;
+  gap: 14px;
+  padding-left: 36px;
   opacity: 0.7;
   transition: opacity 0.3s ease;
 }
@@ -1916,7 +1931,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   font-size: 12px;
   font-weight: 600;
   color: #4285F4;
@@ -1924,7 +1939,7 @@ onMounted(() => {
 }
 
 .position-text {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: #4285F4;
   line-height: 1;
@@ -1938,7 +1953,7 @@ onMounted(() => {
 }
 
 .total-text {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: rgba(66, 133, 244, 0.7);
   line-height: 1;
@@ -1951,15 +1966,15 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.9);
   border: none;
   border-radius: 50%;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: all 0.3s ease;
   color: #4285F4;
-  font-size: 12px;
+  font-size: 13px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
@@ -2544,6 +2559,7 @@ textarea.form-input {
 .step-actions-left {
   display: flex;
   align-items: center;
+  gap: 12px;
   margin-left: 0; /* 确保与表单字段左边距对齐 */
 }
 

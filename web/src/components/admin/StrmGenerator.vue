@@ -166,7 +166,13 @@
         <span>任务启动中，预计 <strong>{{ startupRemaining }}</strong> 秒后开始执行...</span>
       </div>
 
-      <div class="table-container task-table-container">
+      <div v-if="tasks.length === 0" class="empty-state">
+        <i class="fas fa-film empty-icon"></i>
+        <p class="empty-title">暂无 STRM 任务</p>
+        <p class="empty-desc">点击右上角「添加任务」创建第一个 STRM 生成任务</p>
+      </div>
+
+      <div v-else class="table-container task-table-container">
         <table class="data-table">
           <thead>
             <tr>
@@ -4026,6 +4032,32 @@ onBeforeUnmount(() => {
 
 .task-table-container {
   overflow: visible;
+}
+
+.task-table-container .data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 12px;
+}
+
+.task-table-container .data-table thead th:first-child {
+  border-top-left-radius: 12px;
+}
+
+.task-table-container .data-table thead th:last-child {
+  border-top-right-radius: 12px;
+}
+
+.task-table-container .data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.task-table-container .data-table tbody tr:last-child td:first-child {
+  border-bottom-left-radius: 12px;
+}
+
+.task-table-container .data-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: 12px;
 }
 
 .data-table {

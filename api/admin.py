@@ -190,20 +190,25 @@ async def _resume_account_related_tasks(account_id: int):
 
 
 async def _test_driver_connection(driver_name: str, config: Dict[str, Any], account_id: str = "temp_test"):
-    driver = await driver_registry.get_driver_instance(
-        account_id=account_id,
-        driver_name=driver_name,
-        config=config
-    )
-    result = await driver.test_connection()
-    
-    # test_connection 可能刷新了 token，回抓驱动里最新的 config
-    import dataclasses
-    updated_config = {}
-    if hasattr(driver, 'config') and dataclasses.is_dataclass(driver.config):
-        updated_config = dataclasses.asdict(driver.config)
+    driver = None
+    try:
+        driver = await driver_registry.get_driver_instance(
+            account_id=account_id,
+            driver_name=driver_name,
+            config=config
+        )
+        result = await driver.test_connection()
         
-    return result.success, (None if result.success else result.message), updated_config
+        # test_connection 可能刷新了 token，回抓驱动里最新的 config
+        import dataclasses
+        updated_config = {}
+        if hasattr(driver, 'config') and dataclasses.is_dataclass(driver.config):
+            updated_config = dataclasses.asdict(driver.config)
+
+        return result.success, (None if result.success else result.message), updated_config
+    finally:
+        if account_id == "temp_test" and driver is not None:
+            await driver_registry._close_driver_instance(account_id)
 
 
 def _raise_non_litepan_error(error: Exception, message: str):

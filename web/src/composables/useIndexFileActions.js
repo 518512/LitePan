@@ -74,6 +74,7 @@ export function useIndexFileActions({
   selectedAccountId,
   selectedFilesList,
   currentPath,
+  currentDirectoryInitialPath,
   operationLoading,
   setOperationLoading,
   loadFiles,
@@ -92,6 +93,31 @@ export function useIndexFileActions({
     const account = getCurrentAccount()
     if (!account?.config) return 'recycle'
     return account.config.delete_mode === 'delete' ? 'permanent' : 'recycle'
+  }
+
+  const getFileKey = file => String(file?.id ?? file?.name ?? '')
+
+  const refreshFilesSilently = () => {
+    Promise.resolve(refreshFiles(true)).catch(error => {
+      console.warn('文件列表静默刷新失败:', error)
+    })
+  }
+
+  const renameFileLocally = (file, newName) => {
+    const targetKey = getFileKey(file)
+    files.value = files.value.map(item =>
+      getFileKey(item) === targetKey
+        ? { ...item, name: newName }
+        : item
+    )
+  }
+
+  const removeFilesLocally = fileIds => {
+    const removedIdSet = new Set((fileIds || []).map(id => String(id)))
+    if (removedIdSet.size === 0) return
+
+    files.value = files.value.filter(file => !removedIdSet.has(getFileKey(file)))
+    selectedFilesList.value = selectedFilesList.value.filter(id => !removedIdSet.has(String(id)))
   }
 
   const validateFolderName = name => {
@@ -223,7 +249,6 @@ export function useIndexFileActions({
     const isInlineRename = typeof inlineName === 'string'
     const showGlobalLoading = options.showGlobalLoading !== false
     const showSuccess = options.showSuccess !== false
-    const refresh = options.refresh || loadFiles
 
     if (operationLoading.value && showGlobalLoading) return false
 
@@ -277,7 +302,8 @@ export function useIndexFileActions({
           if (showSuccess) {
             window.appNotification.success(response.data.message)
           }
-          await refresh()
+          renameFileLocally(file, newName)
+          refreshFilesSilently()
           return true
         } else {
           window.appNotification.error(response.data.message)
@@ -345,7 +371,6 @@ export function useIndexFileActions({
 
   const deleteFile = async (file, options = {}) => {
     const showGlobalLoading = options.showGlobalLoading !== false
-    const refresh = options.refresh || loadFiles
     const onRequestStart = options.onRequestStart || null
     const onRequestEnd = options.onRequestEnd || null
 
@@ -389,7 +414,8 @@ export function useIndexFileActions({
 
         if (response.data.success) {
           window.appNotification.success(response.data.message)
-          await refresh()
+          removeFilesLocally([file.id || file.name])
+          refreshFilesSilently()
           return true
         } else {
           window.appNotification.error(response.data.message)
@@ -441,6 +467,7 @@ export function useIndexFileActions({
         title: '移动到',
         confirmText: '选择当前目录',
         rootId: getRootId(),
+        initialPath: currentDirectoryInitialPath?.value || '',
         excludedFolderIds: selectedFolderIds,
         allowCreateFolder: true,
         showRefreshButton: false
@@ -450,7 +477,7 @@ export function useIndexFileActions({
     return result?.id || null
   }
 
-  const moveFiles = async (targetFiles, successRefresh = () => refreshFiles(true), options = {}) => {
+  const moveFiles = async (targetFiles, successRefresh = null, options = {}) => {
     const showGlobalLoading = options.showGlobalLoading !== false
     const onRequestStart = options.onRequestStart || null
     const onRequestEnd = options.onRequestEnd || null
@@ -491,7 +518,13 @@ export function useIndexFileActions({
 
       if (response.data.success) {
         window.appNotification.success(response.data.message)
-        await successRefresh()
+        const movedFileIds = movingFiles.map(file => file.id || file.name)
+        removeFilesLocally(movedFileIds)
+        if (typeof successRefresh === 'function') {
+          await successRefresh()
+        } else {
+          refreshFilesSilently()
+        }
         return true
       } else {
         window.appNotification.error(response.data.message)
@@ -513,7 +546,7 @@ export function useIndexFileActions({
     if (operationLoading.value && showGlobalLoading) return false
 
     try {
-      const successRefresh = options.refresh || (() => loadFiles())
+      const successRefresh = options.refresh || null
       return await moveFiles([file], successRefresh, options)
     } catch (error) {
       if (error.message !== 'Modal closed') {
@@ -535,10 +568,7 @@ export function useIndexFileActions({
 
       const selectedIdSet = new Set(selectedFilesList.value.map(id => String(id)))
       const targetFiles = files.value.filter(file => selectedIdSet.has(String(file.id)))
-      await moveFiles(targetFiles, async () => {
-        selectedFilesList.value = []
-        await refreshFiles(true)
-      })
+      await moveFiles(targetFiles)
     } catch (error) {
       if (error.message !== 'Modal closed') {
         console.error('批量移动错误:', error)
@@ -565,6 +595,7 @@ export function useIndexFileActions({
         title: '复制到',
         confirmText: '复制到当前目录',
         rootId: getRootId(),
+        initialPath: currentDirectoryInitialPath?.value || '',
         excludedFolderIds: selectedFolderIds,
         allowCreateFolder: true,
         showRefreshButton: false
@@ -712,8 +743,10 @@ export function useIndexFileActions({
 
         if (response.data.success) {
           window.appNotification.success(response.data.message)
+          const deletedFileIds = [...selectedFilesList.value]
+          removeFilesLocally(deletedFileIds)
           selectedFilesList.value = []
-          await loadFiles()
+          refreshFilesSilently()
         } else {
           window.appNotification.error(response.data.message)
         }

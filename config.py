@@ -7,7 +7,7 @@ from typing import Any, Dict
 from pathlib import Path
 
 APP_NAME = "LitePan"
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.2.0-beta"
 
 try:
     # 日志模块延迟导入，避免应用启动早期的循环依赖

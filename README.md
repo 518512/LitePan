@@ -1,4 +1,4 @@
-# LitePan v0.1.8
+# LitePan v0.2.0-beta
 
 LitePan 是一个多网盘聚合与管理工具，支持 Web 界面、WebDAV、STRM 生成、媒体整理等功能。
 

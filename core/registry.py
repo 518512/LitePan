@@ -87,7 +87,10 @@ class DriverRegistry:
         if account_id in self._driver_instances:
             instance_data = self._driver_instances[account_id]
 
-            if instance_data["config_hash"] == config_hash:
+            if (
+                instance_data.get("driver_name") == driver_name
+                and instance_data["config_hash"] == config_hash
+            ):
                 instance_data["last_used"] = current_time
 
                 # 稳定字段没变也要同步 token/cookie 这些动态字段，不然驱动里残留的是旧凭据
@@ -105,8 +108,7 @@ class DriverRegistry:
 
                 return driver
 
-            else:
-                await self._close_driver_instance(account_id)
+            await self._close_driver_instance(account_id)
 
         driver_data = self._drivers[driver_name]
         config_obj = driver_data["config_class"](**config)

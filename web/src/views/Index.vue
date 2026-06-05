@@ -301,7 +301,8 @@
                       <div class="upload-task-progress-inner" :style="{ width: `${task.progress || 0}%` }"></div>
                     </div>
                     <div v-if="!['success', 'skipped', 'failed'].includes(task.status)" class="upload-task-meta">
-                      <span>{{ getUploadTaskMessage(task) }}</span>
+                      <span class="upload-task-meta-message">{{ getUploadTaskMessage(task) }}</span>
+                      <span v-if="getUploadTaskSpeedText(task)" class="upload-task-speed">{{ getUploadTaskSpeedText(task) }}</span>
                       <span v-if="shouldShowUploadTaskMetaPercent(task)">{{ task.progress || 0 }}%</span>
                     </div>
                     <div v-if="task.error" class="upload-task-error">{{ task.error }}</div>
@@ -486,6 +487,14 @@ const floatingAccountSwitchEnabled = computed(() => (
 const selectedAccountDriverType = computed(() => {
   const account = accounts.value.find(item => String(item.id) === String(selectedAccountId.value))
   return String(account?.driver_type || '').trim().toLowerCase()
+})
+
+const currentDirectoryInitialPath = computed(() => {
+  const segments = breadcrumbItems.value
+    .slice(1)
+    .map(item => String(item.name || '').trim())
+    .filter(Boolean)
+  return segments.join('/')
 })
 
 const usesLazyFolderSizes = () => selectedAccountDriverType.value === LAZY_FOLDER_SIZE_DRIVER
@@ -751,6 +760,29 @@ const getUploadTaskMessage = (task) => {
   return task.message || '-'
 }
 
+const formatUploadSpeed = (bytesPerSecond) => {
+  const speed = Number(bytesPerSecond || 0)
+  if (!Number.isFinite(speed) || speed <= 0) {
+    return ''
+  }
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let value = speed
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const precision = value >= 100 || unitIndex === 0 ? 0 : value >= 10 ? 1 : 2
+  return `${value.toFixed(precision)} ${units[unitIndex]}`
+}
+
+const getUploadTaskSpeedText = (task) => {
+  if (String(task?.status || '') !== 'running') {
+    return ''
+  }
+  return formatUploadSpeed(task?.speed_bytes_per_second)
+}
+
 const getUploadTaskDriverType = (task) => {
   const taskDriverType = String(task?.driver_type || '').trim().toLowerCase()
   if (taskDriverType) {
@@ -808,6 +840,57 @@ const splitUploadRelativePath = (relativePath) => (
     .split('/')
     .filter(Boolean)
 )
+
+const SYSTEM_UPLOAD_JUNK_FILE_NAMES = new Set([
+  '.ds_store',
+  '.localized',
+  'thumbs.db',
+  'ehthumbs.db',
+  'desktop.ini'
+])
+
+const SYSTEM_UPLOAD_JUNK_DIRECTORY_NAMES = new Set([
+  '__macosx',
+  '.spotlight-v100',
+  '.trashes',
+  '.fseventsd',
+  '$recycle.bin',
+  'system volume information',
+  'recycler',
+  '.trash',
+  'lost+found'
+])
+
+const getSystemUploadJunkReason = (relativePath) => {
+  const parts = splitUploadRelativePath(relativePath)
+  if (parts.length === 0) {
+    return ''
+  }
+
+  const directoryParts = parts.slice(0, -1)
+  const ignoredDirectory = directoryParts.find(part => {
+    const normalizedPart = String(part || '').trim().toLowerCase()
+    return (
+      SYSTEM_UPLOAD_JUNK_DIRECTORY_NAMES.has(normalizedPart) ||
+      /^\.trash-\d+$/.test(normalizedPart)
+    )
+  })
+  if (ignoredDirectory) {
+    return '系统生成目录，已跳过'
+  }
+
+  const fileName = String(parts[parts.length - 1] || '').trim()
+  const normalizedFileName = fileName.toLowerCase()
+  if (
+    SYSTEM_UPLOAD_JUNK_FILE_NAMES.has(normalizedFileName) ||
+    normalizedFileName.startsWith('._') ||
+    /^\.nfs[0-9a-f]+$/i.test(fileName)
+  ) {
+    return '系统生成文件，已跳过'
+  }
+
+  return ''
+}
 
 const getUploadRelativeDirectory = (relativePath) => {
   const parts = splitUploadRelativePath(relativePath)
@@ -2481,9 +2564,32 @@ const buildFolderUploadTaskPlans = async (selectedFiles) => {
   const folderIdMap = new Map()
   folderIdMap.set('', currentPath.value)
   const skippedTasks = []
+  const uploadableFiles = []
+
+  for (const item of normalizedFiles) {
+    const skipReason = getSystemUploadJunkReason(item.relativePath)
+    if (skipReason) {
+      skippedTasks.push(createSkippedUploadTask(item.file, skipReason, {
+        displayName: item.relativePath,
+        targetPath: currentPath.value,
+        targetDisplayPath: buildUploadTargetDisplayPath()
+      }))
+      continue
+    }
+    uploadableFiles.push(item)
+  }
+
+  if (uploadableFiles.length === 0) {
+    return {
+      rootFolderName,
+      taskPlans: [],
+      skippedTasks,
+      hasUploadableFiles: false
+    }
+  }
 
   const relativeDirectories = new Set()
-  for (const item of normalizedFiles) {
+  for (const item of uploadableFiles) {
     const directoryPath = getUploadRelativeDirectory(item.relativePath)
     if (!directoryPath) {
       continue
@@ -2527,10 +2633,20 @@ const buildFolderUploadTaskPlans = async (selectedFiles) => {
   const taskPlans = []
   let batchConflictPolicy = null
 
-  for (const item of normalizedFiles) {
+  for (const item of uploadableFiles) {
     const relativeDirectory = getUploadRelativeDirectory(item.relativePath)
     const targetPath = folderIdMap.get(relativeDirectory) || currentPath.value
     const targetDisplayPath = buildUploadTargetDisplayPath(relativeDirectory)
+
+    if (Number(item.file?.size || 0) <= 0) {
+      skippedTasks.push(createSkippedUploadTask(item.file, '暂不支持上传空文件，已跳过', {
+        displayName: item.relativePath,
+        targetPath,
+        targetDisplayPath
+      }))
+      continue
+    }
+
     const remoteNameSet = await getRemoteNameSet(targetPath)
     let conflictPolicy = 'overwrite'
 
@@ -2575,7 +2691,8 @@ const buildFolderUploadTaskPlans = async (selectedFiles) => {
   return {
     rootFolderName,
     taskPlans,
-    skippedTasks
+    skippedTasks,
+    hasUploadableFiles: true
   }
 }
 
@@ -2596,6 +2713,17 @@ const handleUploadFileChange = async (event) => {
     const taskPlans = []
 
     for (const selectedFile of selectedFiles) {
+      const skipReason = getSystemUploadJunkReason(normalizeUploadRelativePath(selectedFile))
+      if (skipReason) {
+        addLocalUploadTask(createSkippedUploadTask(selectedFile, skipReason))
+        continue
+      }
+
+      if (Number(selectedFile?.size || 0) <= 0) {
+        addLocalUploadTask(createSkippedUploadTask(selectedFile, '暂不支持上传空文件，已跳过'))
+        continue
+      }
+
       let conflictPolicy = 'overwrite'
       if (existingNameSet.has(selectedFile.name.toLowerCase())) {
         if (!batchConflictPolicy) {
@@ -2666,7 +2794,7 @@ const handleUploadFolderChange = async (event) => {
       folderPlan.skippedTasks.forEach(task => addLocalUploadTask(task))
     }
 
-    if (folderPlan.rootFolderName) {
+    if (folderPlan.rootFolderName && folderPlan.hasUploadableFiles !== false) {
       await refreshFiles(true)
     }
 
@@ -2967,6 +3095,7 @@ const {
   selectedAccountId,
   selectedFilesList,
   currentPath,
+  currentDirectoryInitialPath,
   operationLoading,
   setOperationLoading,
   loadFiles,
@@ -4160,9 +4289,25 @@ onUnmounted(() => {
   margin-top: 8px;
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   font-size: 12px;
   color: #475569;
+}
+
+.upload-task-meta-message {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-task-speed {
+  flex-shrink: 0;
+  color: #2563eb;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .upload-task-error {

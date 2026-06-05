@@ -94,12 +94,19 @@ async def start_oauth(request: Request):
             "115_Open": "115网盘Open",
             "baidu_open": "百度网盘Open",
             "Baidu_Open": "百度网盘Open",
+            "123_open": "123云盘Open",
+            "123_Open": "123云盘Open",
+            "pan123_open": "123云盘Open",
+            "onedrive": "OneDrive",
+            "OneDrive": "OneDrive",
+            "onedrive_open": "OneDrive",
+            "OneDrive_Open": "OneDrive",
             "guangya": "光鸭云盘"
         }
 
         if driver_type in driver_type_mapping:
             request_data['driver_type'] = driver_type_mapping[driver_type]
-        request_data.setdefault('callback_url', f"{get_oauth_server_url()}/callback")
+        request_data.setdefault('callback_url', f"{get_oauth_server_url()}/callback-popup")
         body = json.dumps(request_data).encode()
     except Exception:
         pass
@@ -198,6 +205,13 @@ async def quick_oauth_auth(driver_type: str, request: Request):
             "115_Open": "115网盘Open",
             "baidu_open": "百度网盘Open",
             "Baidu_Open": "百度网盘Open",
+            "123_open": "123云盘Open",
+            "123_Open": "123云盘Open",
+            "pan123_open": "123云盘Open",
+            "onedrive": "OneDrive",
+            "OneDrive": "OneDrive",
+            "onedrive_open": "OneDrive",
+            "OneDrive_Open": "OneDrive",
             "guangya": "光鸭云盘"
         }
 

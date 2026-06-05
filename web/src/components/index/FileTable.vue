@@ -120,6 +120,26 @@
                 @keydown.esc.prevent="cancelInlineRename"
                 @blur="submitInlineRename"
               >
+              <button
+                type="button"
+                class="folder-inline-btn confirm"
+                :disabled="renameSaving"
+                title="确认"
+                @mousedown.prevent
+                @click="submitInlineRename"
+              >
+                <i class="fas fa-check"></i>
+              </button>
+              <button
+                type="button"
+                class="folder-inline-btn cancel"
+                :disabled="renameSaving"
+                title="取消"
+                @mousedown.prevent
+                @click="cancelInlineRename"
+              >
+                <i class="fas fa-times"></i>
+              </button>
               <span v-if="renameSaving" class="inline-rename-spinner" aria-label="正在重命名"></span>
             </div>
             <div v-else class="file-name list-file-name" @click="$emit('file-click', file)">
@@ -315,6 +335,28 @@
                 @keydown.esc.prevent="cancelInlineRename"
                 @blur="submitInlineRename"
               >
+              <div class="grid-inline-actions">
+                <button
+                  type="button"
+                  class="folder-inline-btn confirm"
+                  :disabled="renameSaving"
+                  title="确认"
+                  @mousedown.prevent
+                  @click="submitInlineRename"
+                >
+                  <i class="fas fa-check"></i>
+                </button>
+                <button
+                  type="button"
+                  class="folder-inline-btn cancel"
+                  :disabled="renameSaving"
+                  title="取消"
+                  @mousedown.prevent
+                  @click="cancelInlineRename"
+                >
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
               <span v-if="renameSaving" class="inline-rename-spinner grid-rename-spinner" aria-label="正在重命名"></span>
             </div>
           </article>
