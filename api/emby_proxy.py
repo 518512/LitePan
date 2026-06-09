@@ -15,6 +15,7 @@ from api.responses import success_response as _success_response, error_response 
 from core.range_proxy import get_range_proxy_session
 from core.emby_proxy_server import emby_proxy_server_manager
 from core.driver_service import get_account_driver_instance
+from core.strm_security import decode_strm_file_key
 from database.db import db
 
 
@@ -155,21 +156,39 @@ def _normalize_media_url(candidate: str, request: Request, config: Dict[str, Any
     return value
 
 
-def _is_litepan_strm_url(value: str) -> bool:
+def _litepan_strm_path(value: str) -> str:
     text = str(value or "").strip()
     if not text:
-        return False
+        return ""
     if text.startswith("http://") or text.startswith("https://"):
-        return urlparse(text).path.lower().startswith("/api/strm/play/")
-    return text.lower().startswith("/api/strm/play/")
+        return urlparse(text).path
+    return text.split("?", 1)[0]
+
+
+def _is_litepan_strm_url(value: str) -> bool:
+    path = _litepan_strm_path(value).lower()
+    if not path:
+        return False
+    return path.startswith("/api/strm/play/") or path.startswith("/api/strm/v2/play/")
 
 
 def _parse_litepan_strm_url(value: str) -> Optional[Dict[str, Any]]:
-    text = str(value or "").strip()
-    if not text:
+    path = _litepan_strm_path(value)
+    if not path:
         return None
-    parsed = urlparse(text)
-    path = parsed.path if parsed.scheme else text.split("?", 1)[0]
+    # v2 链接：/api/strm/v2/play/{account_id}/{file_key}/t/{token}[/s/{signature}]
+    v2_match = re.match(r"^/api/strm/v2/play/(\d+)/([^/]+)/t/", path)
+    if v2_match:
+        try:
+            file_id = decode_strm_file_key(v2_match.group(2))
+        except Exception:
+            return None
+        if not file_id:
+            return None
+        return {
+            "account_id": int(v2_match.group(1)),
+            "file_id": file_id,
+        }
     match = re.match(r"^/api/strm/play/(\d+)/(.*)$", path)
     if not match:
         return None
