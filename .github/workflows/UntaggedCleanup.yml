@@ -1,11 +1,10 @@
-name: Cleanup GHCR Untagged Images
+name: GHCR Untagged Cleanup (Report Mode)
 
 on:
-  # 手动触发（推荐测试用）
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "是否只模拟不删除（true=只打印 / false=真实删除）"
+        description: "是否只模拟不删除（true=安全模式 / false=执行删除）"
         required: false
         default: "true"
 
@@ -19,14 +18,20 @@ jobs:
 
     steps:
 
-      - name: Show mode
+      # =========================
+      # 基础信息
+      # =========================
+      - name: Start cleanup
         run: |
-          echo "======================================"
+          echo "========================================"
           echo "🧹 GHCR 清理任务启动"
           echo "Dry Run: ${{ github.event.inputs.dry_run }}"
-          echo "======================================"
+          echo "========================================"
 
-      - name: Cleanup untagged images
+      # =========================
+      # 核心清理脚本
+      # =========================
+      - name: Cleanup untagged images (with report)
         uses: actions/github-script@v8
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -57,19 +62,42 @@ jobs:
             let deleted = 0;
             let skipped = 0;
 
+            const report = [];
+
             for (const v of versions) {
               const tags = v.metadata?.container?.tags || [];
 
-              // 只处理 untagged
+              // GHCR 页面链接
+              const url = `https://github.com/users/${owner}/packages/container/${packageName}/${v.id}`;
+
+              // digest（可能为空，做兜底）
+              const digest =
+                v.metadata?.container?.package_version_container_metadata?.tagged_object?.digest
+                || v.name
+                || "unknown";
+
               if (!tags || tags.length === 0) {
 
-                console.log(`Found untagged version: ${v.id}`);
+                const item = {
+                  id: v.id,
+                  url,
+                  digest,
+                  action: dryRun ? "DRY_RUN" : "DELETE"
+                };
+
+                report.push(item);
+
+                console.log("========================================");
+                console.log("🧨 UNTAGGED VERSION FOUND");
+                console.log(`ID     : ${v.id}`);
+                console.log(`DIGEST : ${digest}`);
+                console.log(`URL    : ${url}`);
+                console.log(`ACTION : ${dryRun ? "DRY RUN" : "DELETE"}`);
+                console.log("========================================");
 
                 if (dryRun) {
-                  console.log(`🧪 DRY RUN -> would delete ${v.id}`);
                   skipped++;
                 } else {
-                  console.log(`❌ Deleting ${v.id}`);
                   await github.rest.packages.deletePackageVersionForUser({
                     package_type: "container",
                     package_name: packageName,
@@ -81,8 +109,32 @@ jobs:
               }
             }
 
-            console.log("======================================");
-            console.log("Cleanup finished");
+            // =========================
+            // 输出 JSON 报告（可调试）
+            // =========================
+            console.log("========== CLEANUP REPORT ==========");
+            console.log(JSON.stringify(report, null, 2));
             console.log("Deleted:", deleted);
             console.log("Skipped:", skipped);
-            console.log("======================================");
+
+            // 写入 GitHub Step Summary（重点）
+            core.summary
+              .addHeading("🧹 GHCR Cleanup Report")
+              .addText(`Dry Run: ${dryRun}`)
+              .addBreak()
+              .addText(`Total Versions: ${versions.length}`)
+              .addBreak()
+              .addText(`Deleted: ${deleted}`)
+              .addBreak()
+              .addText(`Skipped: ${skipped}`)
+              .addBreak()
+              .addSeparator()
+              .addHeading("📦 Untagged Items");
+
+            for (const item of report) {
+              core.summary.addRaw(
+                `- [${item.id}](${item.url})  \n  \`${item.digest}\`  \n  ${item.action}\n`
+              );
+            }
+
+            await core.summary.write();
