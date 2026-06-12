@@ -1,4 +1,4 @@
-name: GHCR Untagged Cleanup (Stable Final)
+name: GHCR Untagged Cleanup (Stable Safe)
 
 on:
   workflow_dispatch:
@@ -18,12 +18,12 @@ jobs:
 
     steps:
 
-      - name: Start cleanup
+      - name: Start
         run: |
           echo "🧹 GHCR Cleanup Started"
           echo "Dry Run: ${{ github.event.inputs.dry_run }}"
 
-      - name: Cleanup GHCR Images
+      - name: Cleanup GHCR
         uses: actions/github-script@v8
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -53,17 +53,16 @@ jobs:
             for (const v of versions) {
               const tags = v.metadata?.container?.tags || [];
 
-              const url = `https://github.com/users/${owner}/packages/container/${packageName}/${v.id}`;
+              const url =
+                `https://github.com/users/${owner}/packages/container/${packageName}/${v.id}`;
 
-              // ⚠️ digest 可能不存在，所以做安全 fallback
               const digest =
-                v.metadata?.container?.package_version_container_metadata?.tagged_object?.digest
-                || v.metadata?.container?.digest
-                || v.name
-                || "unknown";
+                v.metadata?.container?.digest ||
+                v.metadata?.container?.package_version_container_metadata?.tagged_object?.digest ||
+                v.name ||
+                "unknown";
 
               if (!tags || tags.length === 0) {
-
                 report.push({
                   id: v.id,
                   url,
@@ -71,9 +70,8 @@ jobs:
                   action: dryRun ? "DRY_RUN" : "DELETE"
                 });
 
-                if (dryRun) {
-                  skipped++;
-                } else {
+                if (dryRun) skipped++;
+                else {
                   await github.rest.packages.deletePackageVersionForUser({
                     package_type: "container",
                     package_name: packageName,
@@ -86,36 +84,30 @@ jobs:
             }
 
             // =========================
-            // SAFE SUMMARY（最终稳定版）
+            // SAFE SUMMARY（避免 YAML / markdown 崩溃）
             // =========================
             const summary = core.summary;
 
-            summary.addHeading("🧹 GHCR Cleanup Report");
+            summary.addHeading("GHCR Cleanup Report");
 
             summary.addRaw(
-              `**Mode:** ${dryRun ? "🧪 DRY RUN" : "❌ DELETE"}\n` +
-              `**Total Versions:** ${versions.length}\n` +
-              `**Deleted:** ${deleted}\n` +
-              `**Skipped:** ${skipped}\n`
+              "Mode: " + (dryRun ? "DRY RUN" : "DELETE") + "\n" +
+              "Total: " + versions.length + "\n" +
+              "Deleted: " + deleted + "\n" +
+              "Skipped: " + skipped + "\n"
             );
 
-            summary.addRaw("\n---\n\n");
-            summary.addHeading("📦 Untagged Versions");
+            summary.addRaw("\nUntagged Versions:\n");
 
             if (report.length === 0) {
-              summary.addRaw("🎉 No untagged images found\n");
+              summary.addRaw("No untagged images found\n");
             } else {
-
               for (const item of report) {
                 summary.addRaw(
-`### 🧩 ${item.id}
-
-- 🔗 URL: ${item.url}
-- 🏷 Digest: \`${item.digest}\`
-- ⚙️ Action: ${item.action}
-
----
-`
+                  "ID: " + item.id + "\n" +
+                  "URL: " + item.url + "\n" +
+                  "Digest: " + item.digest + "\n" +
+                  "Action: " + item.action + "\n\n"
                 );
               }
             }
