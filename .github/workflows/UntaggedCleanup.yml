@@ -1,0 +1,88 @@
+name: Cleanup GHCR Untagged Images
+
+on:
+  # 手动触发（推荐测试用）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "是否只模拟不删除（true=只打印 / false=真实删除）"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Show mode
+        run: |
+          echo "======================================"
+          echo "🧹 GHCR 清理任务启动"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          echo "======================================"
+
+      - name: Cleanup untagged images
+        uses: actions/github-script@v8
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const dryRun = (process.env.DRY_RUN || "true") === "true";
+
+            const owner = context.repo.owner;
+            const packageName = "litepan-unofficial";
+
+            console.log("Owner:", owner);
+            console.log("Package:", packageName);
+            console.log("DryRun:", dryRun);
+
+            const versions = await github.paginate(
+              github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
+              {
+                package_type: "container",
+                package_name: packageName,
+                username: owner,
+                per_page: 100
+              }
+            );
+
+            console.log(`Total versions: ${versions.length}`);
+
+            let deleted = 0;
+            let skipped = 0;
+
+            for (const v of versions) {
+              const tags = v.metadata?.container?.tags || [];
+
+              // 只处理 untagged
+              if (!tags || tags.length === 0) {
+
+                console.log(`Found untagged version: ${v.id}`);
+
+                if (dryRun) {
+                  console.log(`🧪 DRY RUN -> would delete ${v.id}`);
+                  skipped++;
+                } else {
+                  console.log(`❌ Deleting ${v.id}`);
+                  await github.rest.packages.deletePackageVersionForUser({
+                    package_type: "container",
+                    package_name: packageName,
+                    username: owner,
+                    package_version_id: v.id
+                  });
+                  deleted++;
+                }
+              }
+            }
+
+            console.log("======================================");
+            console.log("Cleanup finished");
+            console.log("Deleted:", deleted);
+            console.log("Skipped:", skipped);
+            console.log("======================================");
