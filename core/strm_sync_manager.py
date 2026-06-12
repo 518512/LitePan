@@ -510,8 +510,25 @@ class StrmSyncManager:
         result: List[Tuple[str, str, str, int, Optional[datetime], PurePosixPath]],
         metadata_result: Optional[List[Tuple[str, str, int, Optional[datetime], PurePosixPath]]] = None,
         task: Optional[StrmSyncTask] = None,
+        is_root: bool = False,
+        skipped_dirs: Optional[Set[PurePosixPath]] = None,
     ) -> bool:
-        files = await driver.list_files(parent_id)
+        try:
+            files = await driver.list_files(parent_id)
+        except Exception as e:
+            # 根路径（任务配置的根/各分支根）列举失败：直接失败，让用户知道任务路径已不可用。
+            if is_root:
+                raise
+            # 子目录列举失败（典型：WebDAV 上游某挂载点 404/不可达）：记警告并跳过该子树。
+            # 同时登记到 skipped_dirs，清理阶段会保留该子树下已存在的 strm，避免误删。
+            if self._logger:
+                self._logger.warning(
+                    f"STRM跳过无法列举的子目录: account={getattr(task, 'account_id', '-')} "
+                    f"base={base_posix_path} rel={str(relative_parts) or '.'} err={e}"
+                )
+            if skipped_dirs is not None:
+                skipped_dirs.add(relative_parts)
+            return False
         return await self._collect_files_from_items(
             driver,
             files,
@@ -528,6 +545,7 @@ class StrmSyncManager:
             result,
             metadata_result,
             task,
+            skipped_dirs,
         )
 
     async def _collect_files_from_items(
@@ -547,6 +565,7 @@ class StrmSyncManager:
         result: List[Tuple[str, str, str, int, Optional[datetime], PurePosixPath]],
         metadata_result: Optional[List[Tuple[str, str, int, Optional[datetime], PurePosixPath]]] = None,
         task: Optional[StrmSyncTask] = None,
+        skipped_dirs: Optional[Set[PurePosixPath]] = None,
     ) -> bool:
         directory_metadata: List[Tuple[str, str, int, Optional[datetime], PurePosixPath]] = []
         directory_has_media = False
@@ -579,6 +598,8 @@ class StrmSyncManager:
                         result,
                         metadata_result,
                         task=task,
+                        is_root=False,
+                        skipped_dirs=skipped_dirs,
                     )
                     subtree_has_media = subtree_has_media or child_has_media
                 continue
@@ -619,6 +640,26 @@ class StrmSyncManager:
         if metadata_result is not None and (directory_has_media or (metadata_parent_enabled and subtree_has_media)):
             metadata_result.extend(directory_metadata)
         return subtree_has_media
+
+    def _is_strm_under_skipped(
+        self,
+        strm_rel_text: str,
+        task_folder: str,
+        skipped_dirs: Set[PurePosixPath],
+    ) -> bool:
+        """判断某个 strm 文件（相对 strm 根的路径）是否落在被跳过的子树下，落在则清理时应保留。"""
+        if not skipped_dirs:
+            return False
+        strm_path = PurePosixPath(strm_rel_text)
+        for skipped in skipped_dirs:
+            skipped_text = str(skipped).strip("/")
+            prefix = PurePosixPath(task_folder) / skipped_text if skipped_text and skipped_text != "." else PurePosixPath(task_folder)
+            try:
+                strm_path.relative_to(prefix)
+                return True
+            except ValueError:
+                continue
+        return False
 
     def _media_stem(self, file_name: str) -> str:
         name = str(file_name or "")
@@ -1556,13 +1597,10 @@ class StrmSyncManager:
                     if self._logger:
                         self._logger.info(f"STRM分支检查跳过全量扫描: {task.name} 未配置有效分支")
 
-            if task.scan_mode == "full_sync" and not use_branch_check:
-                for file_path in task_root.rglob("*.strm"):
-                    try:
-                        file_path.unlink(missing_ok=True)
-                        deleted_count += 1
-                    except Exception:
-                        pass
+            # full_sync 不再开头删光重建：改由扫描后的差异清理处理（最终文件集一致）。
+            # 这样某个子目录列举失败被跳过时，不会因为先删了再重建不回来而丢失其 strm，
+            # 也避免扫描过程中 Emby 恰好扫到一片空目录。
+            skipped_dirs: Set[PurePosixPath] = set()
 
             collected: List[Tuple[str, str, str, int, Optional[datetime], PurePosixPath]] = []
             metadata_collected: List[Tuple[str, str, int, Optional[datetime], PurePosixPath]] = []
@@ -1668,6 +1706,8 @@ class StrmSyncManager:
                         result=collected,
                         metadata_result=metadata_collected if task.sync_metadata and metadata_extensions else None,
                         task=task,
+                        is_root=True,
+                        skipped_dirs=skipped_dirs,
                     )
                     branch_id = branch.get("id")
                     if branch_id:
@@ -1697,6 +1737,8 @@ class StrmSyncManager:
                     result=collected,
                     metadata_result=metadata_collected if task.sync_metadata and metadata_extensions else None,
                     task=task,
+                    is_root=True,
+                    skipped_dirs=skipped_dirs,
                 )
 
             collected, conflict_skipped_count = self._select_conflict_winners(collected, conflict_policy)
@@ -1811,6 +1853,9 @@ class StrmSyncManager:
                     for file_path in file_iter:
                         rel = str(PurePosixPath(file_path.relative_to(self._strm_root)))
                         if rel not in desired_local_rel_paths:
+                            # 子目录这次没列举成功（被跳过），保留其已存在 strm，不当成“已删除”清掉
+                            if self._is_strm_under_skipped(rel, task_folder, skipped_dirs):
+                                continue
                             try:
                                 file_path.unlink(missing_ok=True)
                                 deleted_count += 1

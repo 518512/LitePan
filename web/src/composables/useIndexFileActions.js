@@ -556,8 +556,9 @@ export function useIndexFileActions({
     }
   }
 
-  const batchMove = async () => {
-    if (operationLoading.value) return
+  const batchMove = async (options = {}) => {
+    const showGlobalLoading = options.showGlobalLoading !== false
+    if (operationLoading.value && showGlobalLoading) return
 
     try {
       const selectedCount = selectedFilesList.value.length
@@ -568,7 +569,7 @@ export function useIndexFileActions({
 
       const selectedIdSet = new Set(selectedFilesList.value.map(id => String(id)))
       const targetFiles = files.value.filter(file => selectedIdSet.has(String(file.id)))
-      await moveFiles(targetFiles)
+      await moveFiles(targetFiles, null, options)
     } catch (error) {
       if (error.message !== 'Modal closed') {
         console.error('批量移动错误:', error)
@@ -697,8 +698,12 @@ export function useIndexFileActions({
     }
   }
 
-  const batchDelete = async () => {
-    if (operationLoading.value) return
+  const batchDelete = async (options = {}) => {
+    const showGlobalLoading = options.showGlobalLoading !== false
+    const onRequestStart = options.onRequestStart || null
+    const onRequestEnd = options.onRequestEnd || null
+
+    if (operationLoading.value && showGlobalLoading) return
 
     try {
       const selectedCount = selectedFilesList.value.length
@@ -728,12 +733,16 @@ export function useIndexFileActions({
 
       await confirm(modalConfig)
 
+      const deletedFileIds = [...selectedFilesList.value]
       try {
-        setOperationLoading(true, 'batch_delete', null, `${selectedCount} 个项目`)
+        if (showGlobalLoading) {
+          setOperationLoading(true, 'batch_delete', null, `${selectedCount} 个项目`)
+        }
+        onRequestStart?.()
         const response = await axios.delete('/api/files/delete', {
           data: {
             account_id: selectedAccountId.value,
-            file_ids: selectedFilesList.value,
+            file_ids: deletedFileIds,
             parent_id: currentPath.value
           },
           headers: {
@@ -743,7 +752,6 @@ export function useIndexFileActions({
 
         if (response.data.success) {
           window.appNotification.success(response.data.message)
-          const deletedFileIds = [...selectedFilesList.value]
           removeFilesLocally(deletedFileIds)
           selectedFilesList.value = []
           refreshFilesSilently()
@@ -753,7 +761,10 @@ export function useIndexFileActions({
       } catch (apiError) {
         window.appNotification.error(`批量删除失败: ${apiError.response?.data?.message || apiError.message}`)
       } finally {
-        setOperationLoading(false)
+        onRequestEnd?.()
+        if (showGlobalLoading) {
+          setOperationLoading(false)
+        }
       }
     } catch (error) {
       if (error.message !== 'Modal closed') {

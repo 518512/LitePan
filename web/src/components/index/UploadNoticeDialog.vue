@@ -25,8 +25,14 @@
     </div>
 
     <div class="notice-tips">
-      <div class="notice-tip">建议电脑和服务器在同一内网，否则请使用网盘官方客户端上传。</div>
-      <div class="notice-tip">上传速度会受服务器网络带宽影响。</div>
+      <div class="notice-tip">
+        <span class="notice-tip-bar" aria-hidden="true"></span>
+        <span>建议电脑和服务器在同一内网，否则请使用网盘官方客户端上传。</span>
+      </div>
+      <div class="notice-tip">
+        <span class="notice-tip-bar" aria-hidden="true"></span>
+        <span>上传速度会受服务器网络带宽影响。</span>
+      </div>
     </div>
 
     <label class="notice-checkbox">
@@ -150,17 +156,14 @@ const confirmNotice = () => {
 }
 
 .notice-tip {
-  position: relative;
-  padding-left: 14px;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
 }
 
-.notice-tip::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
+.notice-tip-bar {
+  flex-shrink: 0;
   width: 4px;
-  height: 18px;
   border-radius: 999px;
   background: linear-gradient(135deg, #4c74df 0%, #02a6f0 100%);
 }

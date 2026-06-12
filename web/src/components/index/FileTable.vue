@@ -472,6 +472,14 @@ const props = defineProps({
   copyFileInline: {
     type: Function,
     default: null
+  },
+  deletingIds: {
+    type: Array,
+    default: () => []
+  },
+  movingIds: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -612,8 +620,14 @@ const focusCreateFolderInput = async () => {
 }
 
 const isInlineRenaming = file => String(file.id || file.name) === String(renamingId.value)
-const isInlineDeleting = file => String(file.id || file.name) === String(deletingId.value)
-const isInlineMoving = file => String(file.id || file.name) === String(movingId.value)
+const batchDeletingIdSet = computed(() => new Set((props.deletingIds || []).map(String)))
+const isInlineDeleting = file =>
+  String(file.id || file.name) === String(deletingId.value) ||
+  batchDeletingIdSet.value.has(String(file.id || file.name))
+const batchMovingIdSet = computed(() => new Set((props.movingIds || []).map(String)))
+const isInlineMoving = file =>
+  String(file.id || file.name) === String(movingId.value) ||
+  batchMovingIdSet.value.has(String(file.id || file.name))
 const isInlineCopying = file => String(file.id || file.name) === String(copyingId.value)
 const isInlineProcessing = file => isInlineDeleting(file) || isInlineMoving(file) || isInlineCopying(file)
 const getInlineProcessingText = file => {

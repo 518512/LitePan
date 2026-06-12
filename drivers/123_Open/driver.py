@@ -522,6 +522,12 @@ class Pan123OpenDriver(BaseDriver):
                 },
             )
         except Exception as e:
+            if "不能复制目录" in str(e):
+                return OperationResult(
+                    success=False,
+                    message="123云盘官方Open接口暂不支持复制文件夹",
+                    data={"warning": True},
+                )
             return OperationResult(success=False, message=f"复制失败: {str(e)}")
 
     async def batch_copy_file(self, file_ids: List[str], target_parent_id: str) -> OperationResult:
@@ -581,7 +587,6 @@ class Pan123OpenDriver(BaseDriver):
         resume_state: Optional[Dict[str, Any]] = None,
         state_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> OperationResult:
-        # 123Open 首版先保证上传链路完整；断点续传状态后续再扩展。
         return await self._upload_local_file_impl(
             local_path=local_path,
             file_name=file_name,
@@ -751,6 +756,73 @@ class Pan123OpenDriver(BaseDriver):
     def _to_api_file_id(self, file_id: str) -> Any:
         normalized = str(file_id or "0").strip() or "0"
         return int(normalized) if normalized.isdigit() else normalized
+
+    @auto_cleanup_cache("upload_file")
+    async def rapid_upload_by_hash(
+        self,
+        parent_id: str,
+        filename: str,
+        hash_type: str,
+        hash_value: str,
+        size: int,
+        duplicate: int = 1,
+    ) -> OperationResult:
+        normalized_parent = self._normalize_parent_id(parent_id)
+        hash_kind = str(hash_type or "").lower()
+
+        if hash_kind == "sha1":
+            sha1 = self.normalize_transfer_hash("sha1", hash_value)
+            if not sha1:
+                return OperationResult(success=False, message="无效的 SHA1 指纹")
+            response = await self._api_request(
+                "sha1_reuse",
+                "POST",
+                json_data={
+                    "parentFileID": self._to_api_file_id(normalized_parent),
+                    "filename": filename,
+                    "sha1": sha1,
+                    "size": int(size or 0),
+                    "duplicate": int(duplicate or 1),
+                },
+            )
+            data = Pan123OpenApiHelper.extract_data(response) or {}
+            reuse = bool(data.get("reuse"))
+            file_id = data.get("fileID") or data.get("fileId")
+            return OperationResult(
+                success=True,
+                message="秒传命中" if reuse else "未命中秒传",
+                data={
+                    "reuse": reuse,
+                    "file_id": str(file_id) if file_id else "",
+                    "parent_id": normalized_parent,
+                },
+            )
+
+        if hash_kind == "md5":
+            file_md5 = self.normalize_transfer_hash("md5", hash_value)
+            if not file_md5:
+                return OperationResult(success=False, message="无效的 MD5 指纹")
+            conflict_policy = "overwrite" if int(duplicate or 1) == 2 else "rename"
+            create_data = await self._create_upload_file(
+                parent_id=normalized_parent,
+                target_name=filename,
+                file_size=int(size or 0),
+                file_md5=file_md5,
+                conflict_policy=conflict_policy,
+            )
+            reuse = bool(create_data.get("reuse"))
+            file_id = create_data.get("fileID") or create_data.get("fileId")
+            return OperationResult(
+                success=True,
+                message="秒传命中" if reuse else "未命中秒传",
+                data={
+                    "reuse": reuse,
+                    "file_id": str(file_id) if file_id else "",
+                    "parent_id": normalized_parent,
+                },
+            )
+
+        raise NotImplementedError(f"123云盘Open不支持 {hash_type} 秒传")
 
     async def _create_upload_file(
         self,

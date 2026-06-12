@@ -10,6 +10,8 @@ DRIVER_INFO = {
     "config_class": Pan123OpenConfig,
     "driver_class": Pan123OpenDriver,
     "capabilities": ["list", "info", "download", "create_folder", "delete", "batch_delete", "rename", "move", "copy"],
+    "provide_hashes": ["md5"],
+    "rapid_upload": ["sha1", "md5"],
     "card_color": "#1890ff",
     "card_name": "123 Open",
     "card_logo": "/logos/123.png",
