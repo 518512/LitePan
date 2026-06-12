@@ -1,10 +1,10 @@
-name: GHCR Untagged Cleanup (Report Mode)
+name: GHCR Untagged Cleanup (UI Report)
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "是否只模拟不删除（true=安全模式 / false=执行删除）"
+        description: "true=只模拟 / false=执行删除"
         required: false
         default: "true"
 
@@ -18,20 +18,12 @@ jobs:
 
     steps:
 
-      # =========================
-      # 基础信息
-      # =========================
-      - name: Start cleanup
+      - name: Start
         run: |
-          echo "========================================"
-          echo "🧹 GHCR 清理任务启动"
+          echo "🧹 GHCR Cleanup Started"
           echo "Dry Run: ${{ github.event.inputs.dry_run }}"
-          echo "========================================"
 
-      # =========================
-      # 核心清理脚本
-      # =========================
-      - name: Cleanup untagged images (with report)
+      - name: Cleanup GHCR + Report
         uses: actions/github-script@v8
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -43,10 +35,6 @@ jobs:
             const owner = context.repo.owner;
             const packageName = "litepan-unofficial";
 
-            console.log("Owner:", owner);
-            console.log("Package:", packageName);
-            console.log("DryRun:", dryRun);
-
             const versions = await github.paginate(
               github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
               {
@@ -57,8 +45,6 @@ jobs:
               }
             );
 
-            console.log(`Total versions: ${versions.length}`);
-
             let deleted = 0;
             let skipped = 0;
 
@@ -67,13 +53,10 @@ jobs:
             for (const v of versions) {
               const tags = v.metadata?.container?.tags || [];
 
-              // GHCR 页面链接
               const url = `https://github.com/users/${owner}/packages/container/${packageName}/${v.id}`;
 
-              // digest（可能为空，做兜底）
               const digest =
                 v.metadata?.container?.package_version_container_metadata?.tagged_object?.digest
-                || v.name
                 || "unknown";
 
               if (!tags || tags.length === 0) {
@@ -87,13 +70,7 @@ jobs:
 
                 report.push(item);
 
-                console.log("========================================");
-                console.log("🧨 UNTAGGED VERSION FOUND");
-                console.log(`ID     : ${v.id}`);
-                console.log(`DIGEST : ${digest}`);
-                console.log(`URL    : ${url}`);
-                console.log(`ACTION : ${dryRun ? "DRY RUN" : "DELETE"}`);
-                console.log("========================================");
+                console.log("UNUSED VERSION:", v.id, digest);
 
                 if (dryRun) {
                   skipped++;
@@ -110,31 +87,34 @@ jobs:
             }
 
             // =========================
-            // 输出 JSON 报告（可调试）
+            // GitHub Step Summary（修复版）
             // =========================
-            console.log("========== CLEANUP REPORT ==========");
-            console.log(JSON.stringify(report, null, 2));
-            console.log("Deleted:", deleted);
-            console.log("Skipped:", skipped);
+            const summary = core.summary;
 
-            // 写入 GitHub Step Summary（重点）
-            core.summary
-              .addHeading("🧹 GHCR Cleanup Report")
-              .addText(`Dry Run: ${dryRun}`)
-              .addBreak()
-              .addText(`Total Versions: ${versions.length}`)
-              .addBreak()
-              .addText(`Deleted: ${deleted}`)
-              .addBreak()
-              .addText(`Skipped: ${skipped}`)
-              .addBreak()
-              .addSeparator()
-              .addHeading("📦 Untagged Items");
+            summary.addHeading("🧹 GHCR Cleanup Report");
 
-            for (const item of report) {
-              core.summary.addRaw(
-                `- [${item.id}](${item.url})  \n  \`${item.digest}\`  \n  ${item.action}\n`
+            summary.addRaw(`**Mode:** ${dryRun ? "🧪 DRY RUN" : "❌ DELETE MODE"}\n\n`);
+            summary.addRaw(`**Total Versions:** ${versions.length}\n\n`);
+            summary.addRaw(`**Deleted:** ${deleted}\n\n`);
+            summary.addRaw(`**Skipped:** ${skipped}\n\n`);
+
+            summary.addSeparator();
+
+            summary.addHeading("📦 Untagged Versions");
+
+            if (report.length === 0) {
+              summary.addRaw("🎉 No untagged images found\n");
+            } else {
+              summary.addRaw(
+                "| ID | Digest | Action |\n" +
+                "|----|--------|--------|\n"
               );
+
+              for (const item of report) {
+                summary.addRaw(
+                  `| [${item.id}](${item.url}) | \`${item.digest}\` | ${item.action} |\n`
+                );
+              }
             }
 
-            await core.summary.write();
+            await summary.write();
