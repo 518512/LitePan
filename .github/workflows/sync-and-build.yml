@@ -56,6 +56,7 @@ jobs:
             echo "上游源码有更新，后续将执行同步与构建。"
           else
             echo "✅ 上游源码无更新，构建 Job 将被跳过。"
+          fi
 
   # ===== Job 2: 同步 + 构建 Docker =====
   build:
