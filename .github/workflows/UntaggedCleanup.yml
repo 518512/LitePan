@@ -1,4 +1,4 @@
-name: GHCR Untagged Cleanup (UI Report)
+name: GHCR Untagged Cleanup (Stable Report)
 
 on:
   workflow_dispatch:
@@ -18,12 +18,12 @@ jobs:
 
     steps:
 
-      - name: Start
+      - name: Start cleanup
         run: |
           echo "🧹 GHCR Cleanup Started"
           echo "Dry Run: ${{ github.event.inputs.dry_run }}"
 
-      - name: Cleanup GHCR + Report
+      - name: Cleanup GHCR
         uses: actions/github-script@v8
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -61,16 +61,12 @@ jobs:
 
               if (!tags || tags.length === 0) {
 
-                const item = {
+                report.push({
                   id: v.id,
                   url,
                   digest,
                   action: dryRun ? "DRY_RUN" : "DELETE"
-                };
-
-                report.push(item);
-
-                console.log("UNUSED VERSION:", v.id, digest);
+                });
 
                 if (dryRun) {
                   skipped++;
@@ -87,34 +83,36 @@ jobs:
             }
 
             // =========================
-            // GitHub Step Summary（修复版）
+            // SUMMARY（稳定版核心）
             // =========================
             const summary = core.summary;
 
             summary.addHeading("🧹 GHCR Cleanup Report");
 
-            summary.addRaw(`**Mode:** ${dryRun ? "🧪 DRY RUN" : "❌ DELETE MODE"}\n\n`);
+            summary.addRaw(`**Mode:** ${dryRun ? "🧪 DRY RUN" : "❌ DELETE"}\n\n`);
             summary.addRaw(`**Total Versions:** ${versions.length}\n\n`);
             summary.addRaw(`**Deleted:** ${deleted}\n\n`);
             summary.addRaw(`**Skipped:** ${skipped}\n\n`);
 
             summary.addSeparator();
 
-            summary.addHeading("📦 Untagged Versions");
+            summary.addRaw("## 📦 Untagged Versions\n\n");
 
             if (report.length === 0) {
               summary.addRaw("🎉 No untagged images found\n");
             } else {
-              summary.addRaw(
-                "| ID | Digest | Action |\n" +
-                "|----|--------|--------|\n"
-              );
+
+              // 一次性构建表格（关键）
+              let table = `
+| ID | Digest | Action |
+|----|--------|--------|
+`;
 
               for (const item of report) {
-                summary.addRaw(
-                  `| [${item.id}](${item.url}) | \`${item.digest}\` | ${item.action} |\n`
-                );
+                table += `| [${item.id}](${item.url}) | \`${item.digest}\` | ${item.action} |\n`;
               }
+
+              summary.addRaw(table);
             }
 
             await summary.write();
