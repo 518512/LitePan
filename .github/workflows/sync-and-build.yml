@@ -21,36 +21,66 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      # 同步上游仓库
+      # 检查上游是否有更新
+      - name: Check upstream updates
+        id: check
+        run: |
+          git remote add upstream https://github.com/Ponphil/LitePan.git || true
+
+          git fetch upstream main --tags
+
+          LOCAL_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+
+          echo "Local SHA: $LOCAL_SHA"
+          echo "Upstream SHA: $UPSTREAM_SHA"
+
+          if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "No updates found."
+            echo "updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "Updates found."
+            echo "updated=true" >> $GITHUB_OUTPUT
+          fi
+
+      # 同步上游
       - name: Sync with upstream
+        if: steps.check.outputs.updated == 'true'
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-          git remote add upstream https://github.com/Ponphil/LitePan.git || true
-
-          # 获取最新代码和标签
           git fetch upstream --prune --tags
 
           git checkout main
 
-          # 合并上游主分支
-          git merge upstream/main --no-edit || echo "Already up to date"
+          # 快进同步
+          git merge --ff-only upstream/main
 
-          # 推送到 Fork
           git push origin main
 
-      # 从 web/package.json 读取版本号
+      # 生成版本号
       - name: Generate version tag
+        if: steps.check.outputs.updated == 'true'
         id: version
         run: |
           VERSION=$(jq -r '.version' web/package.json)
 
-          echo "Detected version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          # 去除 beta 后缀
+          BASE_VERSION=${VERSION%-beta}
 
-      # 生成 Docker Metadata
-      - name: Extract metadata (tags & labels)
+          # 获取上游 Commit SHA
+          UPSTREAM_SHA=$(git rev-parse --short upstream/main)
+
+          FULL_VERSION="${BASE_VERSION}-${UPSTREAM_SHA}"
+
+          echo "Version: $FULL_VERSION"
+
+          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
+
+      # Docker Metadata
+      - name: Extract metadata
+        if: steps.check.outputs.updated == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -59,20 +89,23 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ steps.version.outputs.version }}
 
-      # 启用 Buildx
+      # Buildx
       - name: Set up Docker Buildx
+        if: steps.check.outputs.updated == 'true'
         uses: docker/setup-buildx-action@v3
 
       # 登录 GHCR
       - name: Login to GHCR
+        if: steps.check.outputs.updated == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GH_PAT }}
 
-      # 构建并推送镜像
+      # 构建并推送
       - name: Build and push
+        if: steps.check.outputs.updated == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -82,9 +115,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 输出信息
-      - name: Show version info
+      # 输出结果
+      - name: Show image info
+        if: steps.check.outputs.updated == 'true'
         run: |
-          echo "Version: ${{ steps.version.outputs.version }}"
-          echo "ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}"
-          echo "ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest"
+          echo "Image Tags:"
+          echo "latest"
+          echo "${{ steps.version.outputs.version }}"
