@@ -1,13 +1,11 @@
 name: Daily Sync Upstream & Build Docker
 
 on:
-  # 每天 UTC 2:00 自动运行
   schedule:
     - cron: '0 2 * * *'
-  # 手动触发
   workflow_dispatch:
 
-# ⚡ 强制所有 JS Action 使用 Node.js 24，消除弃用 Warning
+# ⚡ 强制 JS Actions 使用 Node.js 24（避免 Node20 deprecated warning）
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -16,26 +14,32 @@ permissions:
   packages: write
 
 jobs:
-  # ===== Job 1: 检查上游是否有更新 =====
+
+  # =========================
+  # JOB 1: 检查上游是否更新
+  # =========================
   check:
     runs-on: ubuntu-latest
     outputs:
       updated: ${{ steps.check.outputs.updated }}
 
     steps:
-      - name: Checkout your fork
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Check upstream updates
-        id: check
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
+
+      - name: Check upstream changes
+        id: check
+        run: |
           BEHIND=$(git rev-list --count HEAD..upstream/main)
-          echo "Upstream is $BEHIND commits ahead"
+          echo "Upstream ahead commits: $BEHIND"
 
           if [ "$BEHIND" -eq 0 ]; then
             echo "updated=false" >> $GITHUB_OUTPUT
@@ -43,61 +47,94 @@ jobs:
             echo "updated=true" >> $GITHUB_OUTPUT
           fi
 
-      # ⚡ check Job summary
-      - name: Add check summary
+      - name: Check summary
         run: |
           if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
-            echo "上游源码有更新，需要执行同步和构建。" >> $GITHUB_STEP_SUMMARY
+            echo "🔔 上游有更新，将执行同步与构建" >> $GITHUB_STEP_SUMMARY
           else
-            echo "✅ 上游源码无更新，构建 Job 将被跳过。" >> $GITHUB_STEP_SUMMARY
+            echo "✅ 上游无更新，本次跳过构建" >> $GITHUB_STEP_SUMMARY
           fi
 
-  # ===== Job 2: 同步 + 构建 Docker =====
+
+  # =========================
+  # JOB 2: 同步 + 构建 Docker
+  # =========================
   build:
     needs: check
     if: needs.check.outputs.updated == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout your fork
+
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Setup upstream remote
+      - name: Setup upstream
         run: |
           git remote get-url upstream >/dev/null 2>&1 || \
           git remote add upstream https://github.com/Ponphil/LitePan.git
           git fetch upstream main --tags
 
-      - name: Sync with upstream
+      # =========================
+      # 同步上游（强制对齐版本）
+      # =========================
+      - name: Sync upstream (hard reset)
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git checkout main
-          git merge --ff-only upstream/main || echo "没有可 fast-forward 的提交"
-          git push origin main || echo "push 可能因为无更新被跳过"
 
+          git checkout main
+          git reset --hard upstream/main
+          git push origin main --force
+
+      # =========================
+      # 版本生成逻辑（核心）
+      # =========================
       - name: Generate version tag
         id: version
         run: |
+          set -e
+
           VERSION=$(jq -r '.version' web/package.json)
-          BASE_VERSION=${VERSION%-beta}
+          SHA=$(git rev-parse --short HEAD)
+
+          echo "base version: $VERSION"
+          echo "commit sha: $SHA"
+
+          # =========================
+          # 规则说明：
+          # 1. 0.3.x 全部当 beta
+          # 2. 在 beta 基础上加 dev-sha（如果代码变化）
+          # =========================
+
+          TAG="${VERSION}-beta"
+
           UPSTREAM_SHA=$(git rev-parse --short upstream/main)
-          FULL_VERSION="${BASE_VERSION}-${UPSTREAM_SHA}"
-          echo "生成版本: $FULL_VERSION"
-          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
 
-      # ⚡ build Job summary 输出版本信息
-      - name: Add build summary
+          if [ "$SHA" != "$UPSTREAM_SHA" ]; then
+            TAG="${TAG}-dev-${SHA}"
+          fi
+
+          echo "final tag: $TAG"
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+
+      # =========================
+      # Build Summary
+      # =========================
+      - name: Build summary
         run: |
-          echo "========== Docker 构建信息 ==========" >> $GITHUB_STEP_SUMMARY
-          echo "版本号: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "带版本标签镜像: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "最新标签镜像: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest" >> $GITHUB_STEP_SUMMARY
+          echo "## 🐳 LitePan Build Info" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Image: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: latest" >> $GITHUB_STEP_SUMMARY
 
-      - name: Extract Docker metadata
+      # =========================
+      # Docker metadata
+      # =========================
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -106,17 +143,17 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ steps.version.outputs.version }}
 
-      - name: Set up Docker Buildx
+      - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
+      - name: Login GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GH_PAT }}
 
-      - name: Build and push Docker image
+      - name: Build & Push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -126,7 +163,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Delete all untagged images
+      # =========================
+      # 清理 untagged 镜像
+      # =========================
+      - name: Cleanup untagged images
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GH_PAT }}
@@ -144,15 +184,15 @@ jobs:
               }
             );
 
-            for (const version of versions) {
-              const tags = version.metadata?.container?.tags || [];
-              if (tags.length === 0) {
-                console.log(`删除 untagged 镜像版本 ${version.id}`);
+            for (const v of versions) {
+              const tags = v.metadata?.container?.tags || [];
+              if (!tags || tags.length === 0) {
+                console.log("delete untagged:", v.id);
                 await github.rest.packages.deletePackageVersionForUser({
                   package_type: 'container',
                   package_name: packageName,
                   username: owner,
-                  package_version_id: version.id
+                  package_version_id: v.id
                 });
               }
             }
