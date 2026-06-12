@@ -5,35 +5,45 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+# ⚡ 强制 JS Actions 使用 Node 24（可选优化项）
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
   packages: write
 
 jobs:
 
-  # =========================
-  # JOB 1: 检查上游是否更新
-  # =========================
+# =========================
+# JOB 1：检查上游是否更新
+# =========================
   check:
     runs-on: ubuntu-latest
     outputs:
       updated: ${{ steps.check.outputs.updated }}
 
     steps:
+      # 拉取 fork 仓库代码（完整历史用于对比）
       - name: Checkout fork
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
+      # 添加 upstream 源
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      - name: Check upstream changes
+      # 判断 upstream 是否有更新
+      - name: Check upstream updates
         id: check
         run: |
+          set -e
+
+          # HEAD 与 upstream/main 的提交差异数量
           BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "Upstream ahead commits: $BEHIND"
 
@@ -43,18 +53,19 @@ jobs:
             echo "updated=true" >> $GITHUB_OUTPUT
           fi
 
+      # 输出检查结果（GitHub UI summary）
       - name: Check summary
         run: |
           if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
-            echo "🔔 上游有更新，将执行同步与构建" >> $GITHUB_STEP_SUMMARY
+            echo "🔔 检测到上游更新，将进入构建流程" >> $GITHUB_STEP_SUMMARY
           else
-            echo "✅ 上游无更新，本次跳过构建" >> $GITHUB_STEP_SUMMARY
+            echo "✅ 上游无更新，本次流程结束" >> $GITHUB_STEP_SUMMARY
           fi
 
 
-  # =========================
-  # JOB 2: 同步 + 构建 Docker
-  # =========================
+# =========================
+# JOB 2：同步 + 构建 + 清理
+# =========================
   build:
     needs: check
     if: needs.check.outputs.updated == 'true'
@@ -62,12 +73,14 @@ jobs:
 
     steps:
 
+      # 拉取代码
       - name: Checkout fork
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
+      # 拉取 upstream
       - name: Setup upstream
         run: |
           git remote get-url upstream >/dev/null 2>&1 || \
@@ -75,57 +88,73 @@ jobs:
           git fetch upstream main --tags
 
       # =========================
-      # 同步上游（强制对齐版本）
+      # 同步上游（安全模式，不强制覆盖 fork 历史）
       # =========================
-      - name: Sync upstream (hard reset)
+      - name: Sync upstream
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
           git checkout main
-          git reset --hard upstream/main
-          git push origin main --force
+          git merge --ff-only upstream/main || true
+          git push origin main || true
 
       # =========================
-      # 版本生成逻辑（核心）
+      # 版本生成核心逻辑（重点）
       # =========================
       - name: Generate version tag
         id: version
         run: |
           set -e
 
+          # 读取 upstream package.json 版本（如 0.3.1）
           VERSION=$(jq -r '.version' web/package.json)
-          SHA=$(git rev-parse --short HEAD)
+
+          # 当前与 upstream commit
+          UPSTREAM_SHA=$(git rev-parse --short upstream/main)
+          LOCAL_SHA=$(git rev-parse --short HEAD)
 
           echo "base version: $VERSION"
-          echo "commit sha: $SHA"
+          echo "upstream sha: $UPSTREAM_SHA"
+          echo "local sha: $LOCAL_SHA"
 
           # =========================
-          # 规则说明：
-          # 1. 0.3.x 全部当 beta
-          # 2. 在 beta 基础上加 dev-sha（如果代码变化）
+          # 默认状态：beta
           # =========================
-
           TAG="${VERSION}-beta"
 
-          UPSTREAM_SHA=$(git rev-parse --short upstream/main)
+          # =========================
+          # 如果发生偏离 → 自动升级 patch + dev
+          # =========================
+          if [ "$LOCAL_SHA" != "$UPSTREAM_SHA" ]; then
 
-          if [ "$SHA" != "$UPSTREAM_SHA" ]; then
-            TAG="${TAG}-dev-${SHA}"
+            # 拆解版本号：0.3.1
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+
+            # patch +1（你的核心规则）
+            PATCH=$((PATCH + 1))
+            NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+            # dev tag
+            TAG="${NEXT_VERSION}-dev-${LOCAL_SHA}"
           fi
 
           echo "final tag: $TAG"
+
+          # 输出给后续 step
           echo "version=$TAG" >> $GITHUB_OUTPUT
 
       # =========================
-      # Build Summary
+      # Build 信息展示
       # =========================
       - name: Build summary
         run: |
           echo "## 🐳 LitePan Build Info" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- Image: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Tag: latest" >> $GITHUB_STEP_SUMMARY
+          echo "- Latest: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest" >> $GITHUB_STEP_SUMMARY
 
       # =========================
       # Docker metadata
@@ -160,9 +189,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       # =========================
-      # 清理 untagged 镜像
+      # 清理 GHCR（防止无 tag 镜像堆积）
       # =========================
-      - name: Cleanup untagged images
+      - name: Cleanup GHCR
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GH_PAT }}
@@ -182,10 +211,14 @@ jobs:
 
             for (const v of versions) {
               const tags = v.metadata?.container?.tags || [];
+
+              // 只清理“完全没有 tag”的版本（避免误删 latest / 正在用版本）
               if (!tags || tags.length === 0) {
+
                 console.log("delete untagged:", v.id);
+
                 await github.rest.packages.deletePackageVersionForUser({
-                  package_type: 'container',
+                  package_type: "container",
                   package_name: packageName,
                   username: owner,
                   package_version_id: v.id
