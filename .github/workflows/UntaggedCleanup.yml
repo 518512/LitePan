@@ -1,4 +1,4 @@
-name: GHCR Untagged Cleanup (Stable)
+name: GHCR Untagged Cleanup (Stable Final)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,12 @@ jobs:
 
     steps:
 
-      - name: Cleanup GHCR
+      - name: Start cleanup
+        run: |
+          echo "🧹 GHCR Cleanup Started"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+
+      - name: Cleanup GHCR Images
         uses: actions/github-script@v8
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
@@ -50,8 +55,11 @@ jobs:
 
               const url = `https://github.com/users/${owner}/packages/container/${packageName}/${v.id}`;
 
+              // ⚠️ digest 可能不存在，所以做安全 fallback
               const digest =
                 v.metadata?.container?.package_version_container_metadata?.tagged_object?.digest
+                || v.metadata?.container?.digest
+                || v.name
                 || "unknown";
 
               if (!tags || tags.length === 0) {
@@ -63,8 +71,9 @@ jobs:
                   action: dryRun ? "DRY_RUN" : "DELETE"
                 });
 
-                if (dryRun) skipped++;
-                else {
+                if (dryRun) {
+                  skipped++;
+                } else {
                   await github.rest.packages.deletePackageVersionForUser({
                     package_type: "container",
                     package_name: packageName,
@@ -77,30 +86,36 @@ jobs:
             }
 
             // =========================
-            // SAFE SUMMARY（不会炸 YAML）
+            // SAFE SUMMARY（最终稳定版）
             // =========================
             const summary = core.summary;
 
             summary.addHeading("🧹 GHCR Cleanup Report");
 
-            summary.addRaw(`Mode: ${dryRun ? "DRY RUN" : "DELETE"}\n`);
-            summary.addRaw(`Total: ${versions.length}\n`);
-            summary.addRaw(`Deleted: ${deleted}\n`);
-            summary.addRaw(`Skipped: ${skipped}\n`);
+            summary.addRaw(
+              `**Mode:** ${dryRun ? "🧪 DRY RUN" : "❌ DELETE"}\n` +
+              `**Total Versions:** ${versions.length}\n` +
+              `**Deleted:** ${deleted}\n` +
+              `**Skipped:** ${skipped}\n`
+            );
 
-            summary.addRaw("\n---\n");
-            summary.addRaw("## Untagged Versions\n\n");
+            summary.addRaw("\n---\n\n");
+            summary.addHeading("📦 Untagged Versions");
 
             if (report.length === 0) {
-              summary.addRaw("🎉 No untagged images\n");
+              summary.addRaw("🎉 No untagged images found\n");
             } else {
-
-              summary.addRaw("| ID | Digest | Action |\n");
-              summary.addRaw("|---|---|---|\n");
 
               for (const item of report) {
                 summary.addRaw(
-                  `| [${item.id}](${item.url}) | ${item.digest} | ${item.action} |\n`
+`### 🧩 ${item.id}
+
+- 🔗 URL: ${item.url}
+- 🏷 Digest: \`${item.digest}\`
+- ⚙️ Action: ${item.action}
+
+---
+`
                 );
               }
             }
