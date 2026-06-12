@@ -5,10 +5,6 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-# ⚡ 强制 JS Actions 使用 Node.js 24（避免 Node20 deprecated warning）
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 permissions:
   contents: write
   packages: write
@@ -25,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -67,7 +63,7 @@ jobs:
     steps:
 
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
