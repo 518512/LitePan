@@ -17,7 +17,6 @@ jobs:
           fetch-depth: 0
 
       - name: Sync with upstream
-        id: sync
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -29,10 +28,13 @@ jobs:
           git merge upstream/main --no-edit || echo "Already up to date"
           
           git push origin main
-          
-          # 获取最新 tag
+
+      - name: Get latest tag
+        id: meta
+        run: |
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "latest")
           echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "Latest upstream tag: ${LATEST_TAG}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -51,7 +53,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
-            ghcr.io/\( {{ github.repository_owner }}/litepan-unofficial: \){{ steps.sync.outputs.latest_tag }}
+            ghcr.io/\( {{ github.repository_owner }}/litepan-unofficial: \){{ steps.meta.outputs.latest_tag }}
             ghcr.io/\( {{ github.repository_owner }}/litepan-unofficial: \){{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
