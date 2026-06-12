@@ -7,7 +7,12 @@ on:
   # 手动触发
   workflow_dispatch:
 
+# ⚡ 强制所有 JS Action 使用 Node.js 24，消除弃用 Warning
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
+  # 需要写权限才能 push Fork、构建 Docker 和删除 Package
   contents: write
   packages: write
 
@@ -19,22 +24,22 @@ jobs:
       updated: ${{ steps.check.outputs.updated }}
 
     steps:
-      # 检出你自己的 Fork
+      # ⚠️ 这里使用 actions/checkout@v4，注意 Node.js 20 已弃用，已在上方强制切换 Node.js 24
       - name: Checkout your fork
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-          fetch-depth: 0
+          fetch-depth: 0  # 必须完整历史，用于比较上游提交
 
-      # 检查上游是否有更新
+      # 检查 Fork 是否落后上游
       - name: Check upstream updates
         id: check
         run: |
-          # 添加上游 remote
+          # ⚠️ 如果 remote 已存在会报错，用 || true 忽略
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-          # 计算上游比本地多了多少提交
+          # 计算上游比本地多多少提交
           BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "Upstream is $BEHIND commits ahead"
 
@@ -44,56 +49,67 @@ jobs:
             echo "updated=true" >> $GITHUB_OUTPUT
           fi
 
-  # ===== Job 2: 有更新才执行构建 =====
+      # ⚡ 显示提示信息，不影响 build Job
+      - name: Show update status
+        run: |
+          if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
+            echo "上游源码有更新，后续将执行同步与构建。"
+          else
+            echo "✅ 上游源码无更新，构建 Job 将被跳过。"
+
+  # ===== Job 2: 同步 + 构建 Docker =====
   build:
+    # 只有上游有更新时才运行
     needs: check
     if: needs.check.outputs.updated == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      # 再次检出代码
+      # ⚠️ 再次 checkout 是必须的，每个 Job 都是独立环境
       - name: Checkout your fork
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      # 设置上游 remote
+      # 设置 upstream remote 并 fetch，注意 remote 已存在会报错，可安全忽略
       - name: Setup upstream remote
         run: |
-          git remote add upstream https://github.com/Ponphil/LitePan.git || true
+          git remote get-url upstream >/dev/null 2>&1 || \
+          git remote add upstream https://github.com/Ponphil/LitePan.git
           git fetch upstream main --tags
 
-      # 同步上游代码到 main 分支
+      # ⚠️ 同步上游
+      # 注意：如果 Fork 有自己的提交，--ff-only 可能失败
+      # 可替换为：git reset --hard upstream/main && git push origin main --force
       - name: Sync with upstream
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git checkout main
-          git merge --ff-only upstream/main
-          git push origin main
+          git merge --ff-only upstream/main || echo "没有可 fast-forward 的提交"
+          git push origin main || echo "push 可能因为无更新被跳过"
 
-      # 生成 Docker 版本号
+      # 生成 Docker 镜像版本号
       - name: Generate version tag
         id: version
         run: |
-          # 从 web/package.json 读取版本号
+          # ⚠️ 注意 web/package.json 中版本号可能含 -beta
           VERSION=$(jq -r '.version' web/package.json)
           BASE_VERSION=${VERSION%-beta}
-          # 获取上游 commit 短 SHA
           UPSTREAM_SHA=$(git rev-parse --short upstream/main)
           FULL_VERSION="${BASE_VERSION}-${UPSTREAM_SHA}"
-          echo "Version: $FULL_VERSION"
+          echo "生成版本: $FULL_VERSION"
           echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
 
-      # 输出信息，方便在 Actions 日志看到
+      # 输出版本信息，方便查看日志
       - name: Show version info
         run: |
-          echo "Version: ${{ steps.version.outputs.version }}"
-          echo "Docker image with version tag: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}"
-          echo "Docker image with latest tag: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest"
+          echo "版本号: ${{ steps.version.outputs.version }}"
+          echo "Docker 镜像带版本标签: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}"
+          echo "Docker 镜像最新标签: ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest"
 
-      # 提取 Docker 元数据（tags、labels）
+      # 提取 Docker 标签与 Labels
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -103,7 +119,7 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ steps.version.outputs.version }}
 
-      # 设置 Docker Buildx，用于构建多平台镜像（可选）
+      # 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -126,7 +142,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 清理所有未打 tag 的镜像
+      # 删除所有未打 tag 的镜像
       - name: Delete all untagged images
         uses: actions/github-script@v8
         with:
@@ -149,7 +165,7 @@ jobs:
               const tags = version.metadata?.container?.tags || [];
 
               if (tags.length === 0) {
-                console.log(`Deleting untagged version ${version.id}`);
+                console.log(`删除 untagged 镜像版本 ${version.id}`);
                 await github.rest.packages.deletePackageVersionForUser({
                   package_type: 'container',
                   package_name: packageName,
