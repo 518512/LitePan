@@ -30,7 +30,7 @@ jobs:
           
           git push origin main
           
-          # 获取上游最新 tag
+          # 获取最新 tag
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "latest")
           echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
 
@@ -44,7 +44,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GH_PAT }}
 
-      - name: Build and push to GHCR
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
