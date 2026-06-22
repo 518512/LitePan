@@ -17,7 +17,7 @@ permissions:
 
 jobs:
 # =========================
-# 1️⃣ 检查 upstream
+# 1️⃣ 检查 upstream 是否有更新
 # =========================
   check:
     runs-on: ubuntu-latest
@@ -25,7 +25,7 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5        # ← 已更新
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -47,7 +47,7 @@ jobs:
           fi
 
 # =========================
-# 2️⃣ build + sync + docker
+# 2️⃣ 同步 + 构建 + 推送
 # =========================
   build:
     needs: check
@@ -55,64 +55,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5        # ← 已更新
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Setup upstream
-        run: |
-          git remote add upstream https://github.com/Ponphil/LitePan.git || true
-          git fetch upstream main --tags
-
-      # =========================
-      # ⚠️ 安全同步
-      # =========================
-      - name: Sync upstream safely
+      - name: Setup upstream & Sync
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
+          git remote add upstream https://github.com/Ponphil/LitePan.git || true
+          git fetch upstream main --tags
           git checkout main
           git merge upstream/main --no-edit || echo "Already up to date"
           git push origin main
 
       # =========================
-      # 版本生成（优先读取 package.json + git 状态）
+      # 读取 package.json 版本号
       # =========================
       - name: Generate version
         id: version
         run: |
           set -e
           
-          # 1. 从 web/package.json 读取基础版本
           PKG_VERSION=$(jq -r '.version' web/package.json)
           echo "PKG_VERSION from package.json: $PKG_VERSION"
           
-          # 清理版本（去掉 -Beta / -beta 等后缀）
-          BASE_VERSION=$(echo "$PKG_VERSION" | sed -E 's/[-Bb]eta.*$//i' | sed -E 's/^v//')
-          echo "BASE_VERSION=$BASE_VERSION"
+          BASE_VERSION=$(echo "$PKG_VERSION" | sed -E 's/[-[:space:]]*[Bb]eta.*$//i' | sed -E 's/^v//')
+          echo "BASE_VERSION cleaned: $BASE_VERSION"
           
           CURRENT_SHA=$(git rev-parse HEAD)
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
           
-          # 判断是否为官方发布的 beta 版本
-          if [[ "$PKG_VERSION" == *-[Bb]eta* ]] && [ -n "$LATEST_TAG" ] && git rev-list -n 1 "$LATEST_TAG" | grep -q .; then
-            VERSION="${BASE_VERSION}-beta"
+          if [[ "$PKG_VERSION" == *-[Bb]eta* ]]; then
+            VERSION="${BASE_VERSION}-Beta"
             MODE="beta"
           else
-            # dev 版本：patch + 1
-            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
-            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
-            PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
-            NEXT_PATCH=$((PATCH + 1))
-            SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
-            VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
+            VERSION="${BASE_VERSION}-Dev"
             MODE="dev"
           fi
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "dev_version=${BASE_VERSION}-Dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "MODE=$MODE → VERSION=$VERSION (based on $PKG_VERSION)"
 
       # =========================
       # build summary
@@ -122,14 +107,15 @@ jobs:
           echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
           echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dev with SHA: ${{ steps.version.outputs.dev_version }}" >> $GITHUB_STEP_SUMMARY
 
       # =========================
-      # docker build
+      # Docker 构建 & 推送
       # =========================
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login GHCR
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -145,10 +131,11 @@ jobs:
           sbom: false
           tags: |
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.dev_version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
 
       # =========================
-      # ⭐ latest 只在 beta 版本时更新
+      # ⭐ latest 只在 Beta 版本时更新
       # =========================
       - name: Update latest tag (ONLY beta)
         if: steps.version.outputs.mode == 'beta'
@@ -158,9 +145,9 @@ jobs:
             --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
 
       # =========================
-      # cleanup
+      # 清理未打 tag 的镜像
       # =========================
-      - name: Cleanup GHCR
+      - name: Cleanup GHCR untagged images
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GH_PAT }}
