@@ -86,16 +86,15 @@ jobs:
           BASE_VERSION=$(echo "$PKG_VERSION" | sed -E 's/[-[:space:]]*[Bb]eta.*$//i' | sed -E 's/^v//')
           echo "BASE_VERSION: $BASE_VERSION"
           
-          # 使用上游最新的 commit SHA（解决 SHA 不一致问题）
+          # 使用上游 commit 的短 SHA
           UPSTREAM_SHA=$(git rev-parse upstream/main)
           SHORT_SHA=$(echo "$UPSTREAM_SHA" | cut -c1-7)
           echo "UPSTREAM_SHORT_SHA: $SHORT_SHA"
           
-          VERSION="${BASE_VERSION}-Dev"
+          DEV_VERSION="${BASE_VERSION}-Dev-${SHORT_SHA}"
           
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "dev_version=${BASE_VERSION}-Dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "Final tags: $VERSION + ${BASE_VERSION}-Dev-${SHORT_SHA}"
+          echo "dev_version=$DEV_VERSION" >> $GITHUB_OUTPUT
+          echo "Final tags → $DEV_VERSION + dev"
 
       # =========================
       # build summary
@@ -103,9 +102,7 @@ jobs:
       - name: Build summary
         run: |
           echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
-          echo "- Base Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- Dev with SHA: ${{ steps.version.outputs.dev_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Upstream SHA used: $SHORT_SHA" >> $GITHUB_STEP_SUMMARY
 
       # =========================
       # Docker 构建 & 推送
@@ -128,7 +125,6 @@ jobs:
           provenance: false
           sbom: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.dev_version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
 
