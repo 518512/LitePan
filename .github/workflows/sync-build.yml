@@ -3,37 +3,29 @@ name: Daily Sync Upstream & Build Docker
 on:
   schedule:
     - cron: '0 2 * * *'
-
   workflow_dispatch:
     inputs:
       force_build:
-        description: "强制构建"
+        description: "强制构建（忽略 upstream 更新）"
         type: boolean
         required: false
         default: false
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: write
   packages: write
 
 jobs:
-
 # =========================
-# 1️⃣ CHECK
+# 1️⃣ 检查 upstream
 # =========================
   check:
     runs-on: ubuntu-latest
-
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
-      force: ${{ github.event.inputs.force_build }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout fork
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -43,114 +35,94 @@ jobs:
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      - name: Check updates
+      - name: Check upstream changes
         id: check
         run: |
           BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "BEHIND=$BEHIND"
-
           if [ "$BEHIND" -gt 0 ] || [ "${{ github.event.inputs.force_build }}" = "true" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
           fi
 
-
 # =========================
-# 2️⃣ BUILD
+# 2️⃣ build + sync + docker
 # =========================
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
-
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout fork
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Fetch upstream
+      - name: Setup upstream
         run: |
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
       # =========================
-      # 安全同步（不破坏 workflow）
+      # ⚠️ 安全同步
       # =========================
       - name: Sync upstream safely
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
-          git checkout upstream/main -- .
-
-          git add .
-          git commit -m "sync upstream" || true
-          git push origin main || true
-
+          git checkout main
+          git merge upstream/main --no-edit || echo "Already up to date"
+          git push origin main
 
       # =========================
-      # 🔥 修复重点：正确 dev 计算
+      # 版本生成（优化后更稳定）
       # =========================
       - name: Generate version
         id: version
         run: |
           set -e
-
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          
+          # 去除 v 前缀用于解析
+          CLEAN_TAG=${LATEST_TAG#v}
+          
           CURRENT_SHA=$(git rev-parse HEAD)
-
-          RELEASE_TAG=$(git describe --tags --abbrev=0)
-          RELEASE_SHA=$(git rev-list -n 1 "$RELEASE_TAG")
-
-          echo "RELEASE_TAG=$RELEASE_TAG"
-          echo "RELEASE_SHA=$RELEASE_SHA"
-          echo "CURRENT_SHA=$CURRENT_SHA"
-
-          MAJOR=$(echo "$RELEASE_TAG" | cut -d. -f1)
-          MINOR=$(echo "$RELEASE_TAG" | cut -d. -f2)
-          PATCH=$(echo "$RELEASE_TAG" | cut -d. -f3)
-
+          RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG" 2>/dev/null || echo "none")
+          
+          # 版本号拆分
+          MAJOR=$(echo "$CLEAN_TAG" | cut -d. -f1)
+          MINOR=$(echo "$CLEAN_TAG" | cut -d. -f2)
+          PATCH=$(echo "$CLEAN_TAG" | cut -d. -f3 | cut -d- -f1)
+          
           if [ "$CURRENT_SHA" = "$RELEASE_SHA" ]; then
-
-            # =========================
-            # beta（稳定）
-            # =========================
-            VERSION="${RELEASE_TAG}-beta"
+            VERSION="${LATEST_TAG}-beta"
             MODE="beta"
-
           else
-
-            # =========================
-            # dev（关键修复：+1 version）
-            # =========================
-            NEXT_PATCH=$((PATCH + 1))
-
+            PATCH=$((PATCH + 1))
             SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
-
-            VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
+            VERSION="${MAJOR}.${MINOR}.${PATCH}-dev-${SHORT_SHA}"
             MODE="dev"
-
           fi
-
+          
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-
+          echo "LATEST_TAG=$LATEST_TAG"
+          echo "MODE=$MODE"
+          echo "VERSION=$VERSION"
 
       # =========================
       # build summary
       # =========================
       - name: Build summary
         run: |
-          echo "## 🐳 Build Result" >> $GITHUB_STEP_SUMMARY
+          echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
           echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
 
-
       # =========================
-      # Docker build
+      # docker build
       # =========================
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -169,18 +141,45 @@ jobs:
           push: true
           provenance: false
           sbom: false
-
           tags: |
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
-
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev     # 每次构建都更新 dev
 
       # =========================
-      # latest 只绑定 beta
+      # ⭐ latest 只在 beta 版本时更新
       # =========================
-      - name: Update latest (ONLY beta)
+      - name: Update latest tag (ONLY beta)
         if: steps.version.outputs.mode == 'beta'
         run: |
+          echo "Updating :latest tag because this is a beta version"
           docker buildx imagetools create \
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
             --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
+
+      # =========================
+      # cleanup
+      # =========================
+      - name: Cleanup GHCR
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const packageName = "litepan-unofficial";
+            const versions = await github.paginate(
+              github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
+              { package_type: "container", package_name: packageName, username: owner, per_page: 100 }
+            );
+            for (const v of versions) {
+              const tags = v.metadata?.container?.tags || [];
+              if (tags.length === 0) {
+                console.log("Deleting untagged version:", v.id);
+                await github.rest.packages.deletePackageVersionForUser({
+                  package_type: "container",
+                  package_name: packageName,
+                  username: owner,
+                  package_version_id: v.id
+                });
+              }
+            }
