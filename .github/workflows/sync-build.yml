@@ -77,21 +77,18 @@ jobs:
           git push origin main
 
       # =========================
-      # 版本生成（优化后更稳定）
+      # 版本生成
       # =========================
       - name: Generate version
         id: version
         run: |
           set -e
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          
-          # 去除 v 前缀用于解析
           CLEAN_TAG=${LATEST_TAG#v}
           
           CURRENT_SHA=$(git rev-parse HEAD)
           RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG" 2>/dev/null || echo "none")
           
-          # 版本号拆分
           MAJOR=$(echo "$CLEAN_TAG" | cut -d. -f1)
           MINOR=$(echo "$CLEAN_TAG" | cut -d. -f2)
           PATCH=$(echo "$CLEAN_TAG" | cut -d. -f3 | cut -d- -f1)
@@ -108,9 +105,6 @@ jobs:
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "LATEST_TAG=$LATEST_TAG"
-          echo "MODE=$MODE"
-          echo "VERSION=$VERSION"
 
       # =========================
       # build summary
@@ -144,7 +138,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev     # 每次构建都更新 dev
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
 
       # =========================
       # ⭐ latest 只在 beta 版本时更新
@@ -152,7 +146,6 @@ jobs:
       - name: Update latest tag (ONLY beta)
         if: steps.version.outputs.mode == 'beta'
         run: |
-          echo "Updating :latest tag because this is a beta version"
           docker buildx imagetools create \
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
             --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
