@@ -77,28 +77,33 @@ jobs:
           git push origin main
 
       # =========================
-      # 版本生成（按你的需求严格实现）
+      # 版本生成（优先读取 package.json + git 状态）
       # =========================
       - name: Generate version
         id: version
         run: |
           set -e
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          CLEAN_TAG=${LATEST_TAG#v}
+          
+          # 1. 从 web/package.json 读取基础版本
+          PKG_VERSION=$(jq -r '.version' web/package.json)
+          echo "PKG_VERSION from package.json: $PKG_VERSION"
+          
+          # 清理版本（去掉 -Beta / -beta 等后缀）
+          BASE_VERSION=$(echo "$PKG_VERSION" | sed -E 's/[-Bb]eta.*$//i' | sed -E 's/^v//')
+          echo "BASE_VERSION=$BASE_VERSION"
           
           CURRENT_SHA=$(git rev-parse HEAD)
-          RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG" 2>/dev/null || echo "none")
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           
-          # 解析版本号
-          MAJOR=$(echo "$CLEAN_TAG" | cut -d. -f1)
-          MINOR=$(echo "$CLEAN_TAG" | cut -d. -f2)
-          PATCH=$(echo "$CLEAN_TAG" | cut -d. -f3 | cut -d- -f1)
-          
-          if [ "$CURRENT_SHA" = "$RELEASE_SHA" ]; then
-            VERSION="${LATEST_TAG}-beta"
+          # 判断是否为官方发布的 beta 版本
+          if [[ "$PKG_VERSION" == *-[Bb]eta* ]] && [ -n "$LATEST_TAG" ] && git rev-list -n 1 "$LATEST_TAG" | grep -q .; then
+            VERSION="${BASE_VERSION}-beta"
             MODE="beta"
           else
             # dev 版本：patch + 1
+            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+            PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
             NEXT_PATCH=$((PATCH + 1))
             SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
             VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
@@ -107,8 +112,7 @@ jobs:
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "LATEST_TAG=$LATEST_TAG"
-          echo "MODE=$MODE → VERSION=$VERSION"
+          echo "MODE=$MODE → VERSION=$VERSION (based on $PKG_VERSION)"
 
       # =========================
       # build summary
