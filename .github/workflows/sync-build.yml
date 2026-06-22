@@ -22,7 +22,7 @@ permissions:
 jobs:
 
 # =========================
-# JOB 1: check upstream
+# 1️⃣ 检查 upstream
 # =========================
   check:
     runs-on: ubuntu-latest
@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -43,7 +43,7 @@ jobs:
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      - name: Check upstream
+      - name: Check upstream changes
         id: check
         run: |
           BEHIND=$(git rev-list --count HEAD..upstream/main)
@@ -63,7 +63,7 @@ jobs:
 
 
 # =========================
-# JOB 2: build
+# 2️⃣ build + sync + docker
 # =========================
   build:
     needs: check
@@ -73,7 +73,7 @@ jobs:
     steps:
 
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -85,27 +85,22 @@ jobs:
           git fetch upstream main --tags
 
       # =========================
-      # 同步 upstream
+      # ⚠️ 安全同步（不使用 reset，不用 force）
       # =========================
-      - name: Sync upstream
+      - name: Sync upstream safely
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-          git fetch upstream main --tags
-
-          # ✅ 只同步 upstream 代码内容（不会影响 .github/workflows）
           git checkout upstream/main -- .
 
-          # ✅ 提交变更（如果有）
           git add .
           git commit -m "sync upstream" || true
+          git push origin main || true
 
-          # ❗关键：不要 force push
-          git push origin main
 
       # =========================
-      # 版本逻辑（beta / dev）
+      # 版本生成（核心修复）
       # =========================
       - name: Generate version
         id: version
@@ -113,12 +108,17 @@ jobs:
           set -e
 
           CURRENT_SHA=$(git rev-parse HEAD)
+
           LATEST_TAG=$(git describe --tags --abbrev=0)
           RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG")
 
           echo "LATEST_TAG=$LATEST_TAG"
           echo "RELEASE_SHA=$RELEASE_SHA"
           echo "CURRENT_SHA=$CURRENT_SHA"
+
+          MAJOR=$(echo "$LATEST_TAG" | cut -d. -f1)
+          MINOR=$(echo "$LATEST_TAG" | cut -d. -f2)
+          PATCH=$(echo "$LATEST_TAG" | cut -d. -f3)
 
           if [ "$CURRENT_SHA" = "$RELEASE_SHA" ]; then
 
@@ -131,12 +131,8 @@ jobs:
           else
 
             # =========================
-            # dev（开发）
+            # dev（下一版本）
             # =========================
-            MAJOR=$(echo "$LATEST_TAG" | cut -d. -f1)
-            MINOR=$(echo "$LATEST_TAG" | cut -d. -f2)
-            PATCH=$(echo "$LATEST_TAG" | cut -d. -f3)
-
             PATCH=$((PATCH + 1))
             SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
 
@@ -148,6 +144,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "mode=$MODE" >> $GITHUB_OUTPUT
 
+
       # =========================
       # build summary
       # =========================
@@ -156,6 +153,7 @@ jobs:
           echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
           echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+
 
       # =========================
       # docker build
@@ -178,20 +176,21 @@ jobs:
           provenance: false
           sbom: false
 
-          # ❗关键修复：不再直接打 latest
           tags: |
-            ghcr.io/518512/litepan-unofficial:${{ steps.version.outputs.version }}
-            ghcr.io/518512/litepan-unofficial:dev
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
+
 
       # =========================
-      # ⭐ 关键修复：latest 只跟 beta
+      # ⭐ latest 只绑定 beta
       # =========================
       - name: Update latest tag (ONLY beta)
         if: steps.version.outputs.mode == 'beta'
         run: |
           docker buildx imagetools create \
-            ghcr.io/518512/litepan-unofficial:${{ steps.version.outputs.version }} \
-            --tag ghcr.io/518512/litepan-unofficial:latest
+            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
+            --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
+
 
       # =========================
       # cleanup
