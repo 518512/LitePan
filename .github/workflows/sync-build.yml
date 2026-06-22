@@ -25,7 +25,7 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v5        # ← 已更新
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v5        # ← 已更新
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -71,33 +71,31 @@ jobs:
           git push origin main
 
       # =========================
-      # 读取 package.json 版本号
+      # 读取 package.json 并生成版本
       # =========================
       - name: Generate version
         id: version
         run: |
           set -e
           
+          # 读取 package.json 版本
           PKG_VERSION=$(jq -r '.version' web/package.json)
-          echo "PKG_VERSION from package.json: $PKG_VERSION"
+          echo "PKG_VERSION: $PKG_VERSION"
           
+          # 清理得到基础版本（如 0.3.2）
           BASE_VERSION=$(echo "$PKG_VERSION" | sed -E 's/[-[:space:]]*[Bb]eta.*$//i' | sed -E 's/^v//')
-          echo "BASE_VERSION cleaned: $BASE_VERSION"
+          echo "BASE_VERSION: $BASE_VERSION"
           
-          CURRENT_SHA=$(git rev-parse HEAD)
-          SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
+          # 使用上游最新的 commit SHA（解决 SHA 不一致问题）
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          SHORT_SHA=$(echo "$UPSTREAM_SHA" | cut -c1-7)
+          echo "UPSTREAM_SHORT_SHA: $SHORT_SHA"
           
-          if [[ "$PKG_VERSION" == *-[Bb]eta* ]]; then
-            VERSION="${BASE_VERSION}-Beta"
-            MODE="beta"
-          else
-            VERSION="${BASE_VERSION}-Dev"
-            MODE="dev"
-          fi
+          VERSION="${BASE_VERSION}-Dev"
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "dev_version=${BASE_VERSION}-Dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "Final tags: $VERSION + ${BASE_VERSION}-Dev-${SHORT_SHA}"
 
       # =========================
       # build summary
@@ -105,9 +103,9 @@ jobs:
       - name: Build summary
         run: |
           echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
-          echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Base Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- Dev with SHA: ${{ steps.version.outputs.dev_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Upstream SHA used: $SHORT_SHA" >> $GITHUB_STEP_SUMMARY
 
       # =========================
       # Docker 构建 & 推送
@@ -133,16 +131,6 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.dev_version }}
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
-
-      # =========================
-      # ⭐ latest 只在 Beta 版本时更新
-      # =========================
-      - name: Update latest tag (ONLY beta)
-        if: steps.version.outputs.mode == 'beta'
-        run: |
-          docker buildx imagetools create \
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
-            --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
 
       # =========================
       # 清理未打 tag 的镜像
