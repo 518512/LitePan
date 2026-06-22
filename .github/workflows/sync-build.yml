@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: "强制构建（忽略 upstream 更新）"
+        description: "强制构建"
         type: boolean
         required: false
         default: false
@@ -22,17 +22,17 @@ permissions:
 jobs:
 
 # =========================
-# 1️⃣ 检查 upstream
+# 1️⃣ CHECK
 # =========================
   check:
     runs-on: ubuntu-latest
 
     outputs:
-      updated: ${{ steps.check.outputs.updated }}
+      should_build: ${{ steps.check.outputs.should_build }}
       force: ${{ github.event.inputs.force_build }}
 
     steps:
-      - name: Checkout fork
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
@@ -43,49 +43,42 @@ jobs:
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      - name: Check upstream changes
+      - name: Check updates
         id: check
         run: |
           BEHIND=$(git rev-list --count HEAD..upstream/main)
           echo "BEHIND=$BEHIND"
 
-          if [ "$BEHIND" -eq 0 ]; then
-            echo "updated=false" >> $GITHUB_OUTPUT
+          if [ "$BEHIND" -gt 0 ] || [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
           else
-            echo "updated=true" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> $GITHUB_OUTPUT
           fi
-
-      - name: Summary
-        run: |
-          echo "## 🔍 Upstream Check" >> $GITHUB_STEP_SUMMARY
-          echo "- Behind: $(git rev-list --count HEAD..upstream/main)" >> $GITHUB_STEP_SUMMARY
-          echo "- Force: ${{ github.event.inputs.force_build }}" >> $GITHUB_STEP_SUMMARY
 
 
 # =========================
-# 2️⃣ build + sync + docker
+# 2️⃣ BUILD
 # =========================
   build:
     needs: check
-    if: needs.check.outputs.updated == 'true' || needs.check.outputs.force == 'true'
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Checkout fork
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Setup upstream
+      - name: Fetch upstream
         run: |
-          git remote get-url upstream >/dev/null 2>&1 || \
-          git remote add upstream https://github.com/Ponphil/LitePan.git
+          git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
       # =========================
-      # ⚠️ 安全同步（不使用 reset，不用 force）
+      # 安全同步（不破坏 workflow）
       # =========================
       - name: Sync upstream safely
         run: |
@@ -100,7 +93,7 @@ jobs:
 
 
       # =========================
-      # 版本生成（核心修复）
+      # 🔥 修复重点：正确 dev 计算
       # =========================
       - name: Generate version
         id: version
@@ -109,34 +102,35 @@ jobs:
 
           CURRENT_SHA=$(git rev-parse HEAD)
 
-          LATEST_TAG=$(git describe --tags --abbrev=0)
-          RELEASE_SHA=$(git rev-list -n 1 "$LATEST_TAG")
+          RELEASE_TAG=$(git describe --tags --abbrev=0)
+          RELEASE_SHA=$(git rev-list -n 1 "$RELEASE_TAG")
 
-          echo "LATEST_TAG=$LATEST_TAG"
+          echo "RELEASE_TAG=$RELEASE_TAG"
           echo "RELEASE_SHA=$RELEASE_SHA"
           echo "CURRENT_SHA=$CURRENT_SHA"
 
-          MAJOR=$(echo "$LATEST_TAG" | cut -d. -f1)
-          MINOR=$(echo "$LATEST_TAG" | cut -d. -f2)
-          PATCH=$(echo "$LATEST_TAG" | cut -d. -f3)
+          MAJOR=$(echo "$RELEASE_TAG" | cut -d. -f1)
+          MINOR=$(echo "$RELEASE_TAG" | cut -d. -f2)
+          PATCH=$(echo "$RELEASE_TAG" | cut -d. -f3)
 
           if [ "$CURRENT_SHA" = "$RELEASE_SHA" ]; then
 
             # =========================
             # beta（稳定）
             # =========================
-            VERSION="${LATEST_TAG}-beta"
+            VERSION="${RELEASE_TAG}-beta"
             MODE="beta"
 
           else
 
             # =========================
-            # dev（下一版本）
+            # dev（关键修复：+1 version）
             # =========================
-            PATCH=$((PATCH + 1))
+            NEXT_PATCH=$((PATCH + 1))
+
             SHORT_SHA=$(echo "$CURRENT_SHA" | cut -c1-7)
 
-            VERSION="${MAJOR}.${MINOR}.${PATCH}-dev-${SHORT_SHA}"
+            VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
             MODE="dev"
 
           fi
@@ -150,13 +144,13 @@ jobs:
       # =========================
       - name: Build summary
         run: |
-          echo "## 🐳 Build Report" >> $GITHUB_STEP_SUMMARY
+          echo "## 🐳 Build Result" >> $GITHUB_STEP_SUMMARY
           echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
 
 
       # =========================
-      # docker build
+      # Docker build
       # =========================
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -182,48 +176,11 @@ jobs:
 
 
       # =========================
-      # ⭐ latest 只绑定 beta
+      # latest 只绑定 beta
       # =========================
-      - name: Update latest tag (ONLY beta)
+      - name: Update latest (ONLY beta)
         if: steps.version.outputs.mode == 'beta'
         run: |
           docker buildx imagetools create \
             ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
             --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
-
-
-      # =========================
-      # cleanup
-      # =========================
-      - name: Cleanup GHCR
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ secrets.GH_PAT }}
-          script: |
-            const owner = context.repo.owner;
-            const packageName = "litepan-unofficial";
-
-            const versions = await github.paginate(
-              github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
-              {
-                package_type: "container",
-                package_name: packageName,
-                username: owner,
-                per_page: 100
-              }
-            );
-
-            for (const v of versions) {
-              const tags = v.metadata?.container?.tags || [];
-
-              if (!tags || tags.length === 0) {
-                console.log("delete untagged:", v.id);
-
-                await github.rest.packages.deletePackageVersionForUser({
-                  package_type: "container",
-                  package_name: packageName,
-                  username: owner,
-                  package_version_id: v.id
-                });
-              }
-            }
