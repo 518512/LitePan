@@ -1,180 +1,353 @@
+# =============================================================================
+# 每日同步 Upstream 并构建 Docker 镜像
+# - Upstream 检查 / 强制构建
+# - 安全同步（保留本仓库 .github/workflows）
+# - 版本读取 web/src/version.ts → 始终为 dev（防上游改代码忘改版本号）
+# - 标签：v0.4.2-dev-<sha> | dev（永远最新）| latest（同 dev）
+# - Buildx + provenance=false + sbom=false
+# - GHCR 清理 + Summary
+# =============================================================================
+
 name: Daily Sync Upstream & Build Docker
 
 on:
   schedule:
-    - cron: '0 2 * * *'
+    # 每天 UTC 02:00（北京时间 10:00）
+    - cron: "0 2 * * *"
 
   workflow_dispatch:
     inputs:
       force_build:
-        description: "强制构建（忽略 upstream 更新）"
+        description: "强制构建（忽略 upstream 是否有更新）"
         type: boolean
         required: false
         default: false
+      sync_upstream:
+        description: "执行安全同步（拉取 upstream，保留本仓库 workflows）"
+        type: boolean
+        required: false
+        default: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # 镜像名：ghcr.io/<owner>/litepan-unofficial
+  IMAGE: ghcr.io/${{ github.repository_owner }}/litepan-unofficial
 
 permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: daily-sync-build
+  cancel-in-progress: true
+
 jobs:
-
-# =========================================================
-# 1️⃣ CHECK UPSTREAM
-# =========================================================
+  # =========================================================
+  # 1️⃣ CHECK UPSTREAM
+  # =========================================================
   check:
+    name: Upstream 检查
     runs-on: ubuntu-latest
-
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
+      behind: ${{ steps.check.outputs.behind }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
 
     steps:
-      - name: Checkout
+      - name: 检出本仓库
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Fetch upstream
+      - name: 拉取 upstream
         run: |
+          set -euo pipefail
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      - name: Check updates
+      - name: 检查是否落后于 upstream
         id: check
         run: |
+          set -euo pipefail
+
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
           BEHIND=$(git rev-list --count HEAD..upstream/main)
+          FORCE="${{ github.event.inputs.force_build || 'false' }}"
 
-          echo "BEHIND=$BEHIND"
-          echo "FORCE=${{ github.event.inputs.force_build }}"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "behind=${BEHIND}" >> "$GITHUB_OUTPUT"
 
-          if [ "$BEHIND" -gt 0 ] || [ "${{ github.event.inputs.force_build }}" = "true" ]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
+          echo "BEHIND=${BEHIND}"
+          echo "FORCE=${FORCE}"
+          echo "UPSTREAM_SHA=${UPSTREAM_SHA}"
+
+          if [ "${BEHIND}" -gt 0 ] || [ "${FORCE}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 需要构建（落后 ${BEHIND} 个提交 / 强制=${FORCE}）"
           else
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ 无需构建（已与 upstream 同步且未强制）"
           fi
 
-
-# =========================================================
-# 2️⃣ BUILD
-# =========================================================
-  build:
+  # =========================================================
+  # 2️⃣ SAFE SYNC（可选，保留 .github/workflows）
+  # =========================================================
+  sync:
+    name: 安全同步
     needs: check
-    if: needs.check.outputs.should_build == 'true'
+    # 仅当需要构建，且（定时任务 或 手动勾选同步）时执行
+    if: >
+      needs.check.outputs.should_build == 'true' &&
+      (
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' && inputs.sync_upstream == true)
+      )
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout
+      - name: 检出本仓库
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: Fetch upstream
+      - name: 拉取 upstream
         run: |
+          set -euo pipefail
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
 
-      # =====================================================
-      # ⚠️ 关键修复：必须区分 upstream 与 HEAD
-      # =====================================================
-      - name: Generate version
-        id: version
+      - name: 安全同步（备份并恢复 workflows）
         run: |
-          set -e
+          set -euo pipefail
 
-          # =========================
-          # upstream 基准（正确核心）
-          # =========================
-          UPSTREAM_SHA=$(git rev-parse upstream/main)
-
-          RELEASE_TAG=$(git describe --tags --abbrev=0)
-          RELEASE_SHA=$(git rev-list -n 1 "$RELEASE_TAG")
-
-          echo "UPSTREAM_SHA=$UPSTREAM_SHA"
-          echo "RELEASE_TAG=$RELEASE_TAG"
-          echo "RELEASE_SHA=$RELEASE_SHA"
-
-          # =========================
-          # 拆版本号
-          # =========================
-          MAJOR=$(echo "$RELEASE_TAG" | cut -d. -f1)
-          MINOR=$(echo "$RELEASE_TAG" | cut -d. -f2)
-          PATCH=$(echo "$RELEASE_TAG" | cut -d. -f3)
-
-          # =========================
-          # beta / dev 判定（关键修复点）
-          # =========================
-          if [ "$UPSTREAM_SHA" = "$RELEASE_SHA" ]; then
-
-            # =========================
-            # 🟢 beta（稳定版本）
-            # =========================
-            VERSION="${RELEASE_TAG}-beta"
-            MODE="beta"
-
-          else
-
-            # =========================
-            # 🔵 dev（下一版本）
-            # =========================
-            NEXT_PATCH=$((PATCH + 1))
-            SHORT_SHA=$(echo "$UPSTREAM_SHA" | cut -c1-7)
-
-            VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
-            MODE="dev"
-
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          if [ "${BEHIND}" -eq 0 ]; then
+            echo "已与 upstream 一致，跳过同步"
+            exit 0
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          # ---------- 备份本仓库 workflows，防止被 upstream 覆盖 ----------
+          BACKUP_DIR=$(mktemp -d)
+          if [ -d .github/workflows ]; then
+            cp -a .github/workflows "${BACKUP_DIR}/"
+            echo "📦 已备份 .github/workflows"
+          fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # =====================================================
-      # summary
-      # =====================================================
-      - name: Build summary
+          # 合并 upstream（允许无关历史）
+          git merge upstream/main --allow-unrelated-histories \
+            -m "chore: 安全同步 upstream/main（保留本仓库 workflows）" || true
+
+          # ---------- 强制恢复本仓库 workflows ----------
+          if [ -d "${BACKUP_DIR}/workflows" ]; then
+            mkdir -p .github
+            rm -rf .github/workflows
+            cp -a "${BACKUP_DIR}/workflows" .github/
+            git add .github/workflows
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: 恢复本仓库 .github/workflows（安全同步保护）"
+            fi
+          fi
+
+          git push origin HEAD:${{ github.ref_name }}
+          echo "✅ 安全同步完成"
+
+  # =========================================================
+  # 3️⃣ BUILD（始终 dev）
+  # =========================================================
+  build:
+    name: Buildx 构建与推送
+    needs: [check, sync]
+    # sync 可能被跳过，用 always() 判断 check 结果
+    if: |
+      always() &&
+      needs.check.outputs.should_build == 'true' &&
+      (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+
+      - name: 拉取 upstream
         run: |
-          echo "## 🐳 Build Result" >> $GITHUB_STEP_SUMMARY
-          echo "- Mode: ${{ steps.version.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Version: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          git remote add upstream https://github.com/Ponphil/LitePan.git || true
+          git fetch upstream main --tags
 
+      # -----------------------------------------------------
+      # 从 web/src/version.ts 读取版本 → 始终生成 dev 标签
+      # 目的：上游改了代码但忘记改版本号时，仍能用 -dev-<sha> 区分镜像
+      # -----------------------------------------------------
+      - name: 生成 dev 版本号
+        id: version
+        run: |
+          set -euo pipefail
 
-      # =====================================================
-      # docker build
-      # =====================================================
-      - name: Setup Buildx
+          VERSION_FILE="web/src/version.ts"
+          if [ ! -f "${VERSION_FILE}" ]; then
+            echo "❌ 未找到 ${VERSION_FILE}"
+            exit 1
+          fi
+
+          # 提取 APP_VERSION，例如：v0.4.1 Beta
+          RAW=$(grep -E 'export const APP_VERSION\s*=' "${VERSION_FILE}" \
+            | head -1 \
+            | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/")
+          echo "原始版本（version.ts）: ${RAW}"
+
+          # 去掉 Beta/空格等，只保留数字版本：v0.4.1 Beta → 0.4.1
+          BASE=$(echo "${RAW}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/^v//; s/[[:space:]]*beta.*//; s/[[:space:]]+/-/g; s/-+/-/g; s/-$//' \
+            | sed -E 's/[^0-9.].*$//' \
+            | sed -E 's/\.$//')
+
+          MAJOR=$(echo "${BASE}" | cut -d. -f1)
+          MINOR=$(echo "${BASE}" | cut -d. -f2)
+          PATCH=$(echo "${BASE}" | cut -d. -f3)
+          PATCH=${PATCH:-0}
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+
+          # 下一 patch，避免与 version.ts 声明版本撞车
+          NEXT_PATCH=$((PATCH + 1))
+
+          # 用 upstream 最新提交短 SHA，保证「代码变了、版本号没变」也能区分
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+          SHORT_SHA=$(echo "${UPSTREAM_SHA}" | cut -c1-7)
+
+          # 始终为 dev：v0.4.2-dev-a1b2c3d
+          VERSION="v${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          echo "📌 version.ts 声明: ${RAW}"
+          echo "📌 解析 base: ${BASE}"
+          echo "📌 生成 dev 标签: ${VERSION}"
+          echo "📌 upstream SHA: ${UPSTREAM_SHA}"
+
+      # -----------------------------------------------------
+      # Summary
+      # -----------------------------------------------------
+      - name: 构建摘要（预览）
+        run: |
+          {
+            echo "## 🐳 Build Result"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|-----|"
+            echo "| **Mode** | \`dev\`（仅 dev，不用 beta） |"
+            echo "| **Version** | \`${{ steps.version.outputs.version }}\` |"
+            echo "| **镜像** | \`${{ env.IMAGE }}\` |"
+            echo "| **provenance** | false |"
+            echo "| **sbom** | false |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -----------------------------------------------------
+      # Docker Buildx
+      # -----------------------------------------------------
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 设置 Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login GHCR
+      - name: 登录 GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GH_PAT }}
 
-      - name: Build & Push
+      - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           provenance: false
           sbom: false
-
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 具体 dev 版本 + 浮动标签 dev
           tags: |
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:dev
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:dev
 
-
-      # =====================================================
-      # 🟢 latest 只绑定 beta（严格控制）
-      # =====================================================
-      - name: Update latest (ONLY beta)
-        if: steps.version.outputs.mode == 'beta'
+      # -----------------------------------------------------
+      # latest 跟随 dev（无 beta 策略）
+      # -----------------------------------------------------
+      - name: 更新 latest（跟随 dev）
         run: |
+          set -euo pipefail
           docker buildx imagetools create \
-            ghcr.io/${{ github.repository_owner }}/litepan-unofficial:${{ steps.version.outputs.version }} \
-            --tag ghcr.io/${{ github.repository_owner }}/litepan-unofficial:latest
+            "${{ env.IMAGE }}:${{ steps.version.outputs.version }}" \
+            --tag "${{ env.IMAGE }}:latest"
+          echo "✅ latest → ${{ steps.version.outputs.version }}"
+
+      - name: 写入最终摘要
+        run: |
+          {
+            echo ""
+            echo "### 推送的标签"
+            echo "- \`${{ env.IMAGE }}:${{ steps.version.outputs.version }}\` （不可变，带 SHA）"
+            echo "- \`${{ env.IMAGE }}:dev\` （永远指向最新 dev）"
+            echo "- \`${{ env.IMAGE }}:latest\` （与 dev 相同）"
+            echo ""
+            echo "### 说明"
+            echo "版本号由 \`web/src/version.ts\` 的 patch+1 生成，并附带 upstream 短 SHA。"
+            echo "即使上游改了代码却忘记改版本号，镜像标签也会因 SHA 不同而区分开。"
+            echo ""
+            echo "### 拉取示例"
+            echo '```bash'
+            echo "docker pull ${{ env.IMAGE }}:latest"
+            echo "docker pull ${{ env.IMAGE }}:dev"
+            echo "docker pull ${{ env.IMAGE }}:${{ steps.version.outputs.version }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =========================================================
+  # 4️⃣ GHCR CLEANUP
+  # =========================================================
+  cleanup:
+    name: GHCR 清理
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 清理旧镜像
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: litepan-unofficial
+          owner: ${{ github.repository_owner }}
+          # 永不删除：latest、dev；具体 v*-dev-* 由时间与数量策略清理
+          exclude-tags: "^(latest|dev)$"
+          # 删除超过 14 天的旧 dev-sha 版本
+          older-than: "14 days"
+          keep-n-most-recent: 20
+          delete-untagged: true
+          token: ${{ secrets.GH_PAT }}
+
+      - name: 清理摘要
+        run: |
+          {
+            echo ""
+            echo "## 🧹 GHCR 清理"
+            echo "- 保留：\`latest\` / \`dev\`"
+            echo "- 删除：超过 14 天的旧 \`v*-dev-*\`、无标签镜像"
+            echo "- 最多保留 20 个近期版本"
+          } >> "$GITHUB_STEP_SUMMARY"
