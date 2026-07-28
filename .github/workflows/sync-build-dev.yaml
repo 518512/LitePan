@@ -178,15 +178,31 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
 
-      - name: 拉取 upstream
+      # -----------------------------------------------------
+      # 关键：必须拉到 sync 推送后的最新提交
+      # workflow 触发时的 github.sha 不会随 sync job 的 push 更新；
+      # 若不 reset，会用旧代码构建，却打上新的 upstream SHA 标签，
+      # 导致多个 v0.4.2-dev-* 指向同一 digest。
+      # -----------------------------------------------------
+      - name: 切换到同步后的最新代码
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.ref_name }}"
+          git reset --hard "origin/${{ github.ref_name }}"
+          echo "当前 HEAD: $(git rev-parse HEAD)"
+          echo "当前短 SHA: $(git rev-parse --short=7 HEAD)"
+
+      - name: 拉取 upstream（仅用于对照日志）
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/Ponphil/LitePan.git || true
           git fetch upstream main --tags
+          echo "HEAD:          $(git rev-parse HEAD)"
+          echo "upstream/main: $(git rev-parse upstream/main)"
 
       # -----------------------------------------------------
       # 从 web/src/version.ts 读取版本 → 始终生成 dev 标签
-      # 目的：上游改了代码但忘记改版本号时，仍能用 -dev-<sha> 区分镜像
+      # SHA 使用「实际参与构建的 HEAD」，与镜像内容一一对应
       # -----------------------------------------------------
       - name: 生成 dev 版本号
         id: version
@@ -222,22 +238,22 @@ jobs:
           # 下一 patch，避免与 version.ts 声明版本撞车
           NEXT_PATCH=$((PATCH + 1))
 
-          # 用 upstream 最新提交短 SHA，保证「代码变了、版本号没变」也能区分
-          UPSTREAM_SHA=$(git rev-parse upstream/main)
-          SHORT_SHA=$(echo "${UPSTREAM_SHA}" | cut -c1-7)
+          # 使用实际构建的 HEAD 短 SHA（同步后应等于 upstream/main）
+          BUILD_SHA=$(git rev-parse HEAD)
+          SHORT_SHA=$(echo "${BUILD_SHA}" | cut -c1-7)
 
           # 始终为 dev：v0.4.2-dev-a1b2c3d
           VERSION="v${MAJOR}.${MINOR}.${NEXT_PATCH}-dev-${SHORT_SHA}"
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
-          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_sha=${BUILD_SHA}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
           echo "📌 version.ts 声明: ${RAW}"
           echo "📌 解析 base: ${BASE}"
           echo "📌 生成 dev 标签: ${VERSION}"
-          echo "📌 upstream SHA: ${UPSTREAM_SHA}"
+          echo "📌 构建用 HEAD: ${BUILD_SHA}"
 
       # -----------------------------------------------------
       # Summary
