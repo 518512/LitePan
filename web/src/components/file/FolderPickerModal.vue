@@ -5,6 +5,7 @@ import type { Crumb } from "@/stores/browser";
 import AppModal from "@/components/base/AppModal.vue";
 import DriverIcon from "@/components/driver/DriverIcon.vue";
 import FolderSelector from "./FolderSelector.vue";
+import type { FolderSelection } from "./FolderSelector.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -21,8 +22,11 @@ const props = withDefaults(
     // 初始定位面包屑，仅对初始 accountId 生效。
     initialBreadcrumb?: Crumb[];
     initialPath?: string;
-    // 锁定浏览根为任务目录，不可回到更上层。
     rootAnchor?: { parentId: string; path: string; label?: string };
+    multiSelect?: boolean;
+    initialSelections?: FolderSelection[];
+    initialLocationMode?: "preserve" | "root";
+    selectionRestoreMode?: "preserve" | "reset";
   }>(),
   {
     title: "选择目录",
@@ -36,15 +40,26 @@ const props = withDefaults(
     initialBreadcrumb: () => [],
     initialPath: "",
     rootAnchor: undefined,
+    multiSelect: false,
+    initialSelections: () => [],
+    initialLocationMode: "preserve",
+    selectionRestoreMode: "preserve",
   },
 );
 
 const emit = defineEmits<{
   close: [];
-  resolve: [payload: { accountId: number; accountName: string; parentId: string; path: string }];
+  resolve: [payload: {
+    accountId: number;
+    accountName: string;
+    parentId: string;
+    path: string;
+    selections?: FolderSelection[];
+  }];
 }>();
 
 const selAccount = ref<number | null>(props.accountId);
+const selectedItems = ref<FolderSelection[]>([]);
 
 function initAccount() {
   if (props.accountId != null) {
@@ -54,10 +69,34 @@ function initAccount() {
   selAccount.value = props.accounts[0]?.id ?? null;
 }
 
+function initSelections() {
+  selectedItems.value = props.multiSelect && props.selectionRestoreMode === "preserve"
+    ? props.initialSelections.map((item) => ({
+      ...item,
+      ancestorIds: [...(item.ancestorIds ?? [])],
+    }))
+    : [];
+}
+
+const effectiveInitialBreadcrumb = computed(() =>
+  props.initialLocationMode === "root" ? [] : props.initialBreadcrumb,
+);
+
+const effectiveInitialPath = computed(() =>
+  props.initialLocationMode === "root" ? "" : props.initialPath,
+);
+
+const effectiveRootAnchor = computed(() =>
+  props.initialLocationMode === "root" ? undefined : props.rootAnchor,
+);
+
 watch(
   () => props.open,
   (open) => {
-    if (open) initAccount();
+    if (open) {
+      initAccount();
+      initSelections();
+    }
   },
   { immediate: true },
 );
@@ -70,7 +109,18 @@ function accountDriverLabel(account: Account) {
   return account.driver_card_name?.trim() || account.driver_type;
 }
 
-function onResolve(folder: { accountId: number; parentId: string; path: string }) {
+function selectAccount(accountId: number) {
+  if (selAccount.value === accountId) return;
+  selAccount.value = accountId;
+  selectedItems.value = [];
+}
+
+function onResolve(folder: {
+  accountId: number;
+  parentId: string;
+  path: string;
+  selections?: FolderSelection[];
+}) {
   emit("resolve", { ...folder, accountName: accountName.value });
 }
 </script>
@@ -90,7 +140,7 @@ function onResolve(folder: { accountId: number; parentId: string; path: string }
             type="button"
             class="folder-picker__account"
             :class="{ active: a.id === selAccount }"
-            @click="selAccount = a.id"
+            @click="selectAccount(a.id)"
           >
             <DriverIcon
               :name="accountDriverLabel(a)"
@@ -116,9 +166,12 @@ function onResolve(folder: { accountId: number; parentId: string; path: string }
           :excluded-folder-ids="excludedFolderIds"
           :allow-create-folder="allowCreateFolder"
           :show-refresh="showRefresh"
-          :initial-breadcrumb="selAccount === accountId ? initialBreadcrumb : []"
-          :initial-path="selAccount === accountId ? initialPath : ''"
-          :root-anchor="selAccount === accountId ? rootAnchor : undefined"
+          :initial-breadcrumb="selAccount === accountId ? effectiveInitialBreadcrumb : []"
+          :initial-path="selAccount === accountId ? effectiveInitialPath : ''"
+          :root-anchor="selAccount === accountId ? effectiveRootAnchor : undefined"
+          :multi-select="multiSelect"
+          :selected-items="multiSelect ? selectedItems : undefined"
+          @update:selected-items="selectedItems = $event"
           @resolve="onResolve"
           @cancel="emit('close')"
         />
