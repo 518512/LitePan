@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - name: 检出本仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
@@ -287,7 +287,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GH_PAT }}
-
+          
+      - name: 修复 Go 构建环境（Fuse）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse2 libfuse-dev
+          
       - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
