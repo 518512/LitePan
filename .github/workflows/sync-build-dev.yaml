@@ -254,10 +254,9 @@ jobs:
           echo "📌 解析 base: ${BASE}"
           echo "📌 生成 dev 标签: ${VERSION}"
           echo "📌 构建用 HEAD: ${BUILD_SHA}"
-
       # -----------------------------------------------------
       # Summary
-      # -----------------------------------------------------
+      # -----------------------------------------------------         
       - name: 构建摘要（预览）
         run: |
           {
@@ -275,6 +274,33 @@ jobs:
       # -----------------------------------------------------
       # Docker Buildx
       # -----------------------------------------------------
+      - name: 🔧 检查并临时修复缺失驱动
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f "drivers/all.go" ] && [ ! -d "drivers/115" ]; then
+            if grep -q '"litepan/drivers/115"' drivers/all.go; then
+              echo "⚠️ 上游源码引用了不存在的 drivers/115"
+              echo "⚠️ 临时移除，仅用于本次 Docker 构建"
+
+              sed -i '/_ "litepan\/drivers\/115"/d' drivers/all.go
+
+              echo "### ⚠️ Build Compatibility Patch" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "上游 \`drivers/all.go\` 引用了不存在的 \`drivers/115\`。" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "本次仅在 GitHub Actions 工作目录临时移除该引用，**不会提交或推送到 Fork**。" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          echo "当前 drivers："
+          find drivers -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+
+          echo
+          echo "检查 drivers/all.go："
+          grep 'litepan/drivers/' drivers/all.go || true
+          
       - name: 设置 QEMU
         uses: docker/setup-qemu-action@v3
 
